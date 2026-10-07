@@ -22,7 +22,8 @@ const {
 
 const REPO = "OpenWhispr/openwhispr";
 const TAG_PREFIX = "windows-fast-paste-v";
-const ZIP_NAME = "windows-fast-paste-win32-x64.zip";
+// Prebuilt zips are published per arch (win32-x64, win32-arm64).
+const ZIP_NAME = `windows-fast-paste-win32-${process.env.TARGET_ARCH || process.arch}.zip`;
 const BINARY_NAME = "windows-fast-paste.exe";
 
 const VERSION_OVERRIDE = process.env.WINDOWS_FAST_PASTE_VERSION || null;

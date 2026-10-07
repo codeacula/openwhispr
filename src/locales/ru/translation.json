@@ -3720,6 +3720,19 @@
     "dismiss": "Не сейчас",
     "cancel": "Отмена"
   },
+  "npu": {
+    "banner": "Запускать эту модель на NPU Snapdragon",
+    "bannerDescription": "В несколько раз быстрее, чем на CPU, и гораздо экономнее для батареи. Загрузит {{size}} с серверов Qualcomm.",
+    "enableButton": "Включить NPU",
+    "downloadLabel": "Модель для NPU",
+    "active": "Ускорение NPU активно",
+    "ready": "Ускорение NPU готово",
+    "activating": "Активация NPU...",
+    "activationFailed": "Ускорение NPU недоступно",
+    "activationFailedDescription": "OpenWhispr переключился на транскрипцию на CPU.",
+    "retryActivation": "Повторить ускорение NPU",
+    "downloadFailed": "Не удалось загрузить модель для NPU."
+  },
   "app": {
     "toasts": {
       "hotkeyChanged": {
@@ -3740,6 +3753,11 @@
         "title": "Ускорение GPU недоступно",
         "description": "OpenWhispr переключился на транскрипцию на CPU.",
         "retry": "Повторить GPU"
+      },
+      "npuFallback": {
+        "title": "Ускорение NPU недоступно",
+        "description": "OpenWhispr переключился на транскрипцию на CPU.",
+        "retry": "Повторить NPU"
       },
       "gpuPackMigration": {
         "title": "Требуется повторная загрузка GPU-пакета",

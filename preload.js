@@ -464,6 +464,21 @@ contextBridge.exposeInMainWorld("electronAPI", {
     "gpu-fallback-notification",
     (callback) => () => callback()
   ),
+
+  // NPU acceleration (whisper on the Snapdragon Hexagon NPU, Windows on Arm)
+  getNpuWhisperStatus: (modelName) => ipcRenderer.invoke("get-npu-whisper-status", modelName),
+  downloadNpuWhisperModel: (modelName) =>
+    ipcRenderer.invoke("download-npu-whisper-model", modelName),
+  cancelNpuWhisperDownload: () => ipcRenderer.invoke("cancel-npu-whisper-download"),
+  deleteNpuWhisperModel: (modelName) => ipcRenderer.invoke("delete-npu-whisper-model", modelName),
+  onNpuWhisperDownloadProgress: registerListener(
+    "npu-whisper-download-progress",
+    (callback) => (_event, data) => callback(data)
+  ),
+  onNpuFallbackNotification: registerListener(
+    "npu-fallback-notification",
+    (callback) => () => callback()
+  ),
   // Main changed the installed packs or the remembered GPU failure (#1736)
   onWhisperGpuStatusChanged: registerListener(
     "whisper-gpu-status-changed",

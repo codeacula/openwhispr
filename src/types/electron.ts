@@ -804,6 +804,35 @@ export interface VulkanWhisperStatus {
   needsUpdate?: boolean;
 }
 
+export interface NpuWhisperStatus {
+  /** Windows on Snapdragon with the bundled NPU runtime. */
+  supported: boolean;
+  /** The QNN runtime found a usable NPU (Qualcomm's NPU driver is installed). */
+  npuAvailable: boolean;
+  /** Hexagon NPU generation the model builds target ("v73" X Elite/Plus, "v81" X2). */
+  htpArch?: string | null;
+  model?: string;
+  /** An NPU build exists for this Whisper model on this NPU. */
+  modelSupported?: boolean;
+  downloaded?: boolean;
+  downloadSizeBytes?: number;
+  downloading?: boolean;
+  downloadProgress?: number;
+  /** The NPU fell back to CPU on this machine and stays off until retried. */
+  gpuFailed?: boolean;
+  gpuFailReason?: string | null;
+  /** The next start of this model runs on the NPU. */
+  inUse?: boolean;
+}
+
+export interface NpuWhisperDownloadProgress {
+  type: "progress" | "installing" | "complete";
+  model: string;
+  percentage: number;
+  downloaded_bytes?: number;
+  total_bytes?: number;
+}
+
 export interface WhisperServerStatus {
   available: boolean;
   running: boolean;
@@ -812,7 +841,7 @@ export interface WhisperServerStatus {
   isRemote: boolean;
   modelPath: string | null;
   modelName: string | null;
-  gpuBackend: "cuda" | "vulkan" | null;
+  gpuBackend: "cuda" | "vulkan" | "npu" | null;
   /** True only when the running server is actually using a local GPU backend. */
   gpuAccelerated: boolean;
 }
@@ -1893,6 +1922,21 @@ declare global {
         }) => void
       ) => () => void;
       onGpuFallbackNotification: (callback: () => void) => () => void;
+
+      // NPU acceleration (whisper on the Snapdragon Hexagon NPU, Windows on Arm)
+      getNpuWhisperStatus?: (modelName: string) => Promise<NpuWhisperStatus>;
+      downloadNpuWhisperModel?: (modelName: string) => Promise<{
+        success: boolean;
+        willRestart?: boolean;
+        error?: string;
+        code?: string;
+      }>;
+      cancelNpuWhisperDownload?: () => Promise<{ success: boolean }>;
+      deleteNpuWhisperModel?: (modelName: string) => Promise<{ success: boolean }>;
+      onNpuWhisperDownloadProgress?: (
+        callback: (data: NpuWhisperDownloadProgress) => void
+      ) => () => void;
+      onNpuFallbackNotification?: (callback: () => void) => () => void;
       onWhisperGpuStatusChanged: (callback: () => void) => () => void;
 
       // One-time "GPU pack needs re-downloading" notice from the legacy-layout migration

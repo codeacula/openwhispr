@@ -3676,6 +3676,19 @@
     "dismiss": "暫時不要",
     "cancel": "取消"
   },
+  "npu": {
+    "banner": "在 Snapdragon NPU 上執行此模型",
+    "bannerDescription": "比 CPU 快數倍，也更省電。將從 Qualcomm 下載 {{size}}。",
+    "enableButton": "啟用 NPU",
+    "downloadLabel": "NPU 模型",
+    "active": "NPU 加速已啟用",
+    "ready": "NPU 加速已就緒",
+    "activating": "正在啟動 NPU...",
+    "activationFailed": "NPU 加速無法使用",
+    "activationFailedDescription": "OpenWhispr 已切換為 CPU 轉錄。",
+    "retryActivation": "重試 NPU 加速",
+    "downloadFailed": "無法下載 NPU 模型。"
+  },
   "app": {
     "toasts": {
       "hotkeyChanged": {
@@ -3696,6 +3709,11 @@
         "title": "GPU 加速無法使用",
         "description": "OpenWhispr 已切換為 CPU 轉錄。",
         "retry": "重試 GPU"
+      },
+      "npuFallback": {
+        "title": "NPU 加速無法使用",
+        "description": "OpenWhispr 已切換為 CPU 轉錄。",
+        "retry": "重試 NPU"
       },
       "gpuPackMigration": {
         "title": "需要重新下載 GPU 加速包",

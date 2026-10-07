@@ -199,8 +199,8 @@ function configureCMake(cmakeManifestPath) {
     args.push(`-DCMAKE_OSX_ARCHITECTURES=${getDarwinArch()}`);
   }
 
-  if (process.platform === "win32" && targetArch === "x64") {
-    args.push("-A", "x64", "-T", "ClangCL");
+  if (process.platform === "win32") {
+    args.push("-A", targetArch === "arm64" ? "ARM64" : "x64", "-T", "ClangCL");
   }
 
   return run("cmake", args);

@@ -38,11 +38,12 @@ export function useMainProcessNotifications({
       });
     });
 
-    const showGpuFallbackToast = () => {
+    // The NPU falls back like a GPU pack does, with its own wording
+    const showFallbackToast = (keys: "gpuFallback" | "npuFallback") => {
       let toastId: string;
       toastId = toast({
-        title: t("app.toasts.gpuFallback.title"),
-        description: t("app.toasts.gpuFallback.description"),
+        title: t(`app.toasts.${keys}.title`),
+        description: t(`app.toasts.${keys}.description`),
         duration: 10000,
         action: (
           <ToastActionButton
@@ -55,15 +56,19 @@ export function useMainProcessNotifications({
               }
             }}
           >
-            {t("app.toasts.gpuFallback.retry")}
+            {t(`app.toasts.${keys}.retry`)}
           </ToastActionButton>
         ),
       });
     };
+    const showGpuFallbackToast = () => showFallbackToast("gpuFallback");
     const unsubscribeCudaFallback =
       window.electronAPI?.onCudaFallbackNotification?.(showGpuFallbackToast);
     const unsubscribeGpuFallback =
       window.electronAPI?.onGpuFallbackNotification?.(showGpuFallbackToast);
+    const unsubscribeNpuFallback = window.electronAPI?.onNpuFallbackNotification?.(() =>
+      showFallbackToast("npuFallback")
+    );
 
     const unsubscribeCorrections = window.electronAPI?.onCorrectionsLearned?.((words) => {
       if (words && words.length > 0) {
@@ -103,6 +108,7 @@ export function useMainProcessNotifications({
       unsubscribeFailed?.();
       unsubscribeCudaFallback?.();
       unsubscribeGpuFallback?.();
+      unsubscribeNpuFallback?.();
       unsubscribeCorrections?.();
     };
   }, [toast, dismiss, t]);

@@ -80,6 +80,16 @@ const BINARIES = {
     diarizeOutputName: "sherpa-onnx-diarize-win32-x64.exe",
     libPattern: "*.dll",
   },
+  "win32-arm64": {
+    archiveName: `sherpa-onnx-v${SHERPA_ONNX_VERSION}-win-arm64-shared-MD-Release-no-tts.tar.bz2`,
+    binaryPath: "sherpa-onnx-offline-websocket-server.exe",
+    outputName: "sherpa-onnx-ws-win32-arm64.exe",
+    onlineBinaryPath: "sherpa-onnx-online-websocket-server.exe",
+    onlineOutputName: "sherpa-onnx-online-ws-win32-arm64.exe",
+    diarizeBinaryPath: "sherpa-onnx-offline-speaker-diarization.exe",
+    diarizeOutputName: "sherpa-onnx-diarize-win32-arm64.exe",
+    libPattern: "*.dll",
+  },
   "linux-x64": {
     archiveName: `sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared-no-tts.tar.bz2`,
     binaryPath: "sherpa-onnx-offline-websocket-server",

@@ -27,6 +27,7 @@ const TARGETS = [
   { platform: "darwin", arch: "x64", ext: "tar.gz" },
   { platform: "linux", arch: "x64", ext: "tar.gz" },
   { platform: "win32", arch: "x64", ext: "zip" },
+  { platform: "win32", arch: "arm64", ext: "zip" },
 ];
 
 const binaryName = ({ platform, arch }) =>

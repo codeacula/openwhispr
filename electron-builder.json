@@ -129,6 +129,7 @@
         "linux-text-monitor",
         "linux-key-listener*",
         "meeting-aec-helper-*",
+        "whisper-npu-win32-arm64/**",
         "windows-key-listener*",
         "windows-mic-listener*",
         "windows-system-audio-helper*",

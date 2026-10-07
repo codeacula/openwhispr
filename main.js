@@ -300,6 +300,7 @@ const TextEditMonitor = require("./src/helpers/textEditMonitor");
 const SelectionManager = require("./src/helpers/selectionManager");
 const { PermissionGuideManager } = require("./src/helpers/permissionGuideManager");
 const WhisperCudaManager = require("./src/helpers/whisperCudaManager");
+const WhisperNpuManager = require("./src/helpers/whisperNpuManager");
 const WhisperVulkanManager = require("./src/helpers/whisperVulkanManager");
 const {
   migrateLegacyBinDir,
@@ -347,6 +348,7 @@ let linuxKeyManager = null;
 let textEditMonitor = null;
 let selectionManager = null;
 let whisperCudaManager = null;
+let whisperNpuManager = null;
 let whisperVulkanManager = null;
 let googleCalendarManager = null;
 let microsoftCalendarManager = null;
@@ -576,8 +578,16 @@ function initializeCoreManagers() {
         );
       }
     }
+    // Whisper on the Snapdragon NPU: only Windows on Arm installers bundle its runtime
+    if (process.platform === "win32" && process.arch === "arm64") {
+      whisperNpuManager = new WhisperNpuManager();
+    }
     // Lets every server start resolve its GPU backend from installed packs
-    whisperManager.setGpuBinaryManagers({ cuda: whisperCudaManager, vulkan: whisperVulkanManager });
+    whisperManager.setGpuBinaryManagers({
+      cuda: whisperCudaManager,
+      vulkan: whisperVulkanManager,
+      npu: whisperNpuManager,
+    });
   }
   parakeetManager = new ParakeetManager();
   diarizationManager = new DiarizationManager();
@@ -655,6 +665,7 @@ function initializeCoreManagers() {
     selectionManager,
     whisperCudaManager,
     whisperVulkanManager,
+    whisperNpuManager,
     googleCalendarManager,
     microsoftCalendarManager,
     appleCalendarManager,

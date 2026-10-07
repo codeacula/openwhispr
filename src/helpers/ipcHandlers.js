@@ -629,6 +629,7 @@ class IPCHandlers {
     this.getTrayManager = managers.getTrayManager;
     this.whisperCudaManager = managers.whisperCudaManager;
     this.whisperVulkanManager = managers.whisperVulkanManager;
+    this.whisperNpuManager = managers.whisperNpuManager;
     this.googleCalendarManager = managers.googleCalendarManager;
     this.connectorManager = managers.connectorManager;
     this.microsoftCalendarManager = managers.microsoftCalendarManager;
@@ -1261,6 +1262,10 @@ class IPCHandlers {
     serverManager.on("gpu-fallback", ({ reason }) => {
       this._recordWhisperGpuFailure("vulkan", reason);
       broadcastToWindows("gpu-fallback-notification", {});
+    });
+    serverManager.on("npu-fallback", ({ reason }) => {
+      this._recordWhisperGpuFailure("npu", reason);
+      broadcastToWindows("npu-fallback-notification", {});
     });
     // Persist the discrete-GPU pin so later launches spawn pinned directly
     // instead of paying a second Vulkan cold start. See #1606.
@@ -3390,7 +3395,7 @@ class IPCHandlers {
     ipcMain.handle("whisper-server-start", async (event, modelName) => {
       return this.whisperManager.startServer(
         modelName,
-        this.whisperManager.resolveGpuStartOptions()
+        this.whisperManager.resolveGpuStartOptions(modelName)
       );
     });
 
@@ -3597,6 +3602,76 @@ class IPCHandlers {
       this._clearWhisperGpuFailure("vulkan");
       this._applyWhisperGpuPreference(reloadModel);
       return { success: true, deletedCount };
+    });
+
+    // Whisper on the Snapdragon NPU. Unlike a GPU pack, each model has its own
+    // NPU build, so status, download and delete are per model; the CPU model
+    // stays installed and is what the server falls back to.
+    ipcMain.handle("get-npu-whisper-status", async (_event, modelName) => {
+      if (!this.whisperNpuManager) return { supported: false, npuAvailable: false };
+      try {
+        return {
+          ...(await this.whisperNpuManager.getStatus(modelName)),
+          ...this._whisperGpuFailureStatus("npu"),
+          inUse: !!this.whisperManager.resolveNpuStartOptions(
+            modelName,
+            this._whisperGpuFailedBackends()
+          ),
+        };
+      } catch (error) {
+        return { supported: false, npuAvailable: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("download-npu-whisper-model", async (event, modelName) => {
+      if (!this.whisperNpuManager) {
+        return { success: false, error: "NPU not supported on this platform" };
+      }
+      try {
+        await this.whisperNpuManager.downloadModel(modelName, (progress) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send("npu-whisper-download-progress", progress);
+          }
+        });
+        this._syncStartupEnv({ WHISPER_NPU_ENABLED: "true" });
+        this._clearWhisperGpuFailure("npu");
+        const reloadModel = this._whisperReloadModel();
+        const willRestart =
+          reloadModel === modelName && this._applyWhisperGpuPreference(reloadModel);
+        if (!willRestart) broadcastToWindows("whisper-gpu-status-changed");
+        return { success: true, willRestart };
+      } catch (error) {
+        if (error.code !== "DOWNLOAD_CANCELLED") {
+          debugLogger.error("NPU whisper model download failed", {
+            model: modelName,
+            error: error.message,
+          });
+        }
+        return { success: false, error: error.message, code: error.code };
+      }
+    });
+
+    ipcMain.handle("cancel-npu-whisper-download", async () => {
+      if (!this.whisperNpuManager) return { success: false };
+      return this.whisperNpuManager.cancelDownload();
+    });
+
+    ipcMain.handle("delete-npu-whisper-model", async (_event, modelName) => {
+      if (!this.whisperNpuManager) return { success: false };
+      try {
+        const reloadModel = this._whisperReloadModel();
+        // The NPU server memory-maps the model files, which Windows won't delete
+        if (this.whisperManager.serverManager.useNpu && reloadModel === modelName) {
+          await this.whisperManager.stopServer().catch(() => {});
+        }
+        const result = await this.whisperNpuManager.deleteModel(modelName);
+        this._clearWhisperGpuFailure("npu");
+        if (reloadModel === modelName) this._applyWhisperGpuPreference(reloadModel);
+        else broadcastToWindows("whisper-gpu-status-changed");
+        return result;
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
     });
 
     // One-time "GPU pack needs re-downloading" notice recorded by the

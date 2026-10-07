@@ -21,7 +21,8 @@ const {
 
 const REPO = "OpenWhispr/openwhispr";
 const TAG_PREFIX = "windows-key-listener-v";
-const ZIP_NAME = "windows-key-listener-win32-x64.zip";
+// Prebuilt zips are published per arch (win32-x64, win32-arm64).
+const ZIP_NAME = `windows-key-listener-win32-${process.env.TARGET_ARCH || process.arch}.zip`;
 const BINARY_NAME = "windows-key-listener.exe";
 
 // Version can be pinned via environment variable for reproducible builds

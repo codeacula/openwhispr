@@ -4,7 +4,7 @@ const sidecarPidFile = require("./sidecarPidFile");
 
 const EXPECTED_BINARY_FRAGMENTS = {
   parakeet: ["sherpa-onnx-ws-", "sherpa-onnx-online-ws-"],
-  whisper: ["whisper-server"],
+  whisper: ["whisper-server", "whisper-npu-server"],
   llama: ["llama-server"],
   qdrant: ["qdrant"],
   diarization: ["sherpa-onnx-diarize"],

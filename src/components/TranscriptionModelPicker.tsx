@@ -47,6 +47,7 @@ import { API_ENDPOINTS, normalizeBaseUrl } from "../config/constants";
 import { GetApiKeyLink } from "./ui/GetApiKeyLink";
 import { getCachedPlatform } from "../utils/platform";
 import { pickWhisperGpuBackend } from "../utils/whisperGpuPack";
+import WhisperNpuCard from "./WhisperNpuCard";
 import logger from "../utils/logger";
 import type { ParakeetCheckResult } from "../types/electron";
 
@@ -1547,6 +1548,17 @@ export default function TranscriptionModelPicker({
                   </p>
                 )}
               </div>
+            )}
+
+          {internalLocalProvider === "whisper" &&
+            selectedLocalModel &&
+            getCachedPlatform() === "win32" && (
+              <WhisperNpuCard
+                model={selectedLocalModel}
+                cpuModelDownloaded={
+                  !!localModels.find((m) => m.model === selectedLocalModel)?.downloaded
+                }
+              />
             )}
 
           <div>

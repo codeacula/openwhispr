@@ -31,7 +31,7 @@ const PLATFORM_CONFIG = {
   win32: {
     label: "windows-text-monitor",
     tagPrefix: "windows-text-monitor-v",
-    archiveName: "windows-text-monitor-win32-x64.zip",
+    archiveName: `windows-text-monitor-win32-${process.env.TARGET_ARCH || process.arch}.zip`,
     binaryName: "windows-text-monitor.exe",
     versionEnv: "WINDOWS_TEXT_MONITOR_VERSION",
     compileHint: "install Visual Studio Build Tools or MinGW-w64",

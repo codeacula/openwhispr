@@ -5,6 +5,7 @@ const path = require("path");
 const http = require("http");
 const { app } = require("electron");
 const debugLogger = require("./debugLogger");
+const { resolveFfmpegStaticPath } = require("./ffmpegStaticPath");
 const { killProcess } = require("../utils/process");
 const { isPortAvailable, getAvailableParallelism } = require("../utils/serverUtils");
 const { getSafeTempDir } = require("./safeTempDir");
@@ -140,7 +141,24 @@ function resolveVulkanDeviceIndex(options = {}) {
   return Number.isInteger(persisted) && persisted >= 0 ? persisted : null;
 }
 
+// Event each accelerated backend emits when it falls back to the CPU server
+const FALLBACK_EVENTS = Object.freeze({
+  cuda: "cuda-fallback",
+  vulkan: "gpu-fallback",
+  npu: "npu-fallback",
+});
+
+// Start options that pin the CPU server: the NPU swaps both the binary and
+// the model (npuServerPath/npuModelDir), so a CPU restart clears both.
+const CPU_ONLY_OPTIONS = Object.freeze({
+  useCuda: false,
+  useVulkan: false,
+  npuModelDir: null,
+  npuServerPath: null,
+});
+
 function getGpuSignature(options = {}) {
+  if (options.npuModelDir) return "gpu:npu";
   const useCuda = options.useCuda === true;
   const useVulkan = !useCuda && options.useVulkan === true;
   if (useCuda) return "gpu:cuda";
@@ -299,6 +317,7 @@ class WhisperServerManager extends EventEmitter {
     this.canConvert = false;
     this.useCuda = false;
     this.useVulkan = false;
+    this.useNpu = false;
     this.startGeneration = 0;
     this._stopRequested = false;
     this.vadSignature = "vad:off";
@@ -315,7 +334,7 @@ class WhisperServerManager extends EventEmitter {
     if (this.cachedFFmpegPath) return this.cachedFFmpegPath;
 
     try {
-      let ffmpegPath = require("ffmpeg-static");
+      let ffmpegPath = resolveFfmpegStaticPath();
       ffmpegPath = path.normalize(ffmpegPath);
 
       if (process.platform === "win32" && !ffmpegPath.endsWith(".exe")) {
@@ -551,19 +570,31 @@ class WhisperServerManager extends EventEmitter {
   async _doStart(modelPath, options = {}) {
     this.startGeneration += 1;
     this._stopRequested = false;
-    const usingCuda = options.useCuda || false;
-    const usingVulkan = !usingCuda && (options.useVulkan || false);
+    // The NPU runs its own server (whisper-npu-server) on its own model files;
+    // modelPath stays the ggml model, which identifies the model across
+    // backends and is what the CPU fallback loads.
+    const usingNpu = !!options.npuModelDir && !!options.npuServerPath;
+    const usingCuda = !usingNpu && (options.useCuda || false);
+    const usingVulkan = !usingNpu && !usingCuda && (options.useVulkan || false);
     const threadResolution = options.threadResolution || resolveWhisperThreads(options);
-    const serverBinary = this.getServerBinaryPath(
-      usingCuda ? { preferCuda: true } : usingVulkan ? { preferVulkan: true } : {}
-    );
-    if (!serverBinary) throw new Error("whisper-server binary not found");
+    const serverBinary = usingNpu
+      ? options.npuServerPath
+      : this.getServerBinaryPath(
+          usingCuda ? { preferCuda: true } : usingVulkan ? { preferVulkan: true } : {}
+        );
+    if (!serverBinary || (usingNpu && !fs.existsSync(serverBinary))) {
+      throw new Error("whisper-server binary not found");
+    }
     if (!fs.existsSync(modelPath)) throw new Error(`Model file not found: ${modelPath}`);
+    if (usingNpu && !fs.existsSync(options.npuModelDir)) {
+      throw new Error(`NPU model not found: ${options.npuModelDir}`);
+    }
 
     this.port = await this.findAvailablePort();
     this.modelPath = modelPath;
     this.useCuda = usingCuda;
     this.useVulkan = usingVulkan;
+    this.useNpu = usingNpu;
 
     // Pin Vulkan to a specific device (see resolveVulkanDeviceIndex; the
     // one-shot restart below passes the explicit index).
@@ -577,6 +608,7 @@ class WhisperServerManager extends EventEmitter {
       useCuda: usingCuda,
       useVulkan: usingVulkan,
       vulkanDeviceIndex: vulkanDeviceIndex ?? -1,
+      npuModelDir: usingNpu ? options.npuModelDir : null,
     });
 
     // Check for FFmpeg first - only use --convert flag if FFmpeg is available
@@ -603,7 +635,7 @@ class WhisperServerManager extends EventEmitter {
     }
 
     const args = buildWhisperServerArgs({
-      modelPath,
+      modelPath: usingNpu ? options.npuModelDir : modelPath,
       port: this.port,
       language: options.language,
       threads: threadResolution.threads,
@@ -629,6 +661,7 @@ class WhisperServerManager extends EventEmitter {
       cwd: serverBinaryDir,
       cuda: usingCuda,
       vulkan: usingVulkan,
+      npu: usingNpu,
       vulkanDeviceIndex,
       threads: threadResolution,
     });
@@ -680,7 +713,8 @@ class WhisperServerManager extends EventEmitter {
     } catch (err) {
       // An intentional stop() during startup is not a GPU/thread failure
       if (err.isStopped) throw err;
-      if (usingCuda || usingVulkan) {
+      const backend = usingNpu ? "npu" : usingCuda ? "cuda" : usingVulkan ? "vulkan" : null;
+      if (backend) {
         // Fall back on ANY startup rejection — a GPU server can exit early
         // (missing kernels), die late (VRAM OOM mid-model-load), or hang, and
         // in every case the CPU binary is the working answer. stop() reaps a
@@ -690,14 +724,15 @@ class WhisperServerManager extends EventEmitter {
           ...getProcessInfo(),
           timeoutMs: startupTimeoutMs,
         });
-        debugLogger.warn(
-          `${usingCuda ? "CUDA" : "Vulkan"} whisper-server failed, falling back to CPU`,
-          { error: err.message, exitCode, reason }
-        );
-        this.emit(usingCuda ? "cuda-fallback" : "gpu-fallback", { reason });
+        debugLogger.warn(`${backend} whisper-server failed, falling back to CPU`, {
+          error: err.message,
+          exitCode,
+          reason,
+        });
+        this.emit(FALLBACK_EVENTS[backend], { reason });
         await this.stop();
         this.gpuFallbackActive = true;
-        return this._doStart(modelPath, { ...options, useCuda: false, useVulkan: false });
+        return this._doStart(modelPath, { ...options, ...CPU_ONLY_OPTIONS });
       }
       if (shouldFallbackToDefaultThreads(threadResolution)) {
         const defaultThreadResolution = createThreadResolution(
@@ -1043,7 +1078,7 @@ class WhisperServerManager extends EventEmitter {
     if (!err?.isConnectionError || this.isRemote || this._stopRequested) throw err;
 
     if (this.startGeneration === generation) {
-      if (!this.useCuda && !this.useVulkan) throw err;
+      if (!this._acceleratedBackend()) throw err;
 
       // The child's close handler clears this.process; wait for it so a crash is told
       // apart from a server that merely refused this one request.
@@ -1052,7 +1087,7 @@ class WhisperServerManager extends EventEmitter {
         this.startGeneration === generation &&
         shouldFallbackToCpuAfterRequestError({
           isConnectionError: true,
-          useGpu: this.useCuda || this.useVulkan,
+          useGpu: this._acceleratedBackend() !== null,
           isRemote: this.isRemote,
           stopRequested: this._stopRequested,
           generationChanged: false,
@@ -1084,11 +1119,7 @@ class WhisperServerManager extends EventEmitter {
     } catch (retryErr) {
       // The replacement can be another doomed GPU server (a peer restarted with the
       // GPU flags still set): give it the same one-shot crash check before giving up.
-      if (
-        !retryErr?.isConnectionError ||
-        this._stopRequested ||
-        (!this.useCuda && !this.useVulkan)
-      ) {
+      if (!retryErr?.isConnectionError || this._stopRequested || !this._acceleratedBackend()) {
         throw retryErr;
       }
       const exited = await this._waitForProcessExit(PROCESS_EXIT_WAIT_MS);
@@ -1098,7 +1129,7 @@ class WhisperServerManager extends EventEmitter {
   }
 
   async _fallbackToCpuAndRetry(body, boundary, modelPath, stderrMark) {
-    const backend = this.useCuda ? "cuda" : "vulkan";
+    const backend = this._acceleratedBackend();
     // Read the crashed server's output now (the CPU start below replaces it),
     // from where the failing request began. A peer's replacement server is a
     // different process, so its output is read whole.
@@ -1113,10 +1144,10 @@ class WhisperServerManager extends EventEmitter {
       model: modelPath ? path.basename(modelPath) : null,
       reason,
     });
-    await this.start(modelPath, { ...this.lastStartOptions, useCuda: false, useVulkan: false });
+    await this.start(modelPath, { ...this.lastStartOptions, ...CPU_ONLY_OPTIONS });
     this.gpuFallbackActive = true;
     // Emit only once the CPU server is up — the notification tells the user CPU is in use
-    this.emit(backend === "cuda" ? "cuda-fallback" : "gpu-fallback", { reason });
+    this.emit(FALLBACK_EVENTS[backend], { reason });
     return await this._postInference(body, boundary);
   }
 
@@ -1202,9 +1233,17 @@ class WhisperServerManager extends EventEmitter {
     this.modelPath = null;
   }
 
+  // The accelerator the running server uses: "cuda", "vulkan", "npu", or null on CPU
+  _acceleratedBackend() {
+    if (this.useNpu) return "npu";
+    if (this.useCuda) return "cuda";
+    if (this.useVulkan) return "vulkan";
+    return null;
+  }
+
   getStatus() {
     const running = this.ready && (this.process !== null || this.isRemote);
-    const gpuBackend = this.useCuda ? "cuda" : this.useVulkan ? "vulkan" : null;
+    const gpuBackend = this._acceleratedBackend();
     return {
       available: this.isAvailable(),
       running,

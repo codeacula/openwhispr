@@ -192,6 +192,8 @@ build/
 resources/bin/
 native/meeting-aec-helper/build/
 native/meeting-aec-helper/third_party/
+native/whisper-npu-server/build/
+native/whisper-npu-server/third_party/
 
 # macOS
 .DS_Store

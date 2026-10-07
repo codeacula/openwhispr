@@ -266,6 +266,38 @@ function verifyWindowsKeyListener(binDir) {
   }
 }
 
+// Whisper on the Snapdragon NPU ships only in Windows on Arm builds, built by
+// scripts/build-whisper-npu-server.js. Without it the Settings NPU card never
+// appears, so an arm64 build must carry it; any other target drops a copy a
+// shared resources/bin picked up, since Qualcomm's QNN libraries only run there.
+const WHISPER_NPU_RUNTIME_FILES = [
+  "whisper-npu-server.exe",
+  "onnxruntime.dll",
+  "onnxruntime_providers_qnn.dll",
+  "QnnHtp.dll",
+  "QnnSystem.dll",
+];
+
+function verifyWhisperNpuRuntime(context) {
+  const runtimeDir = path.join(resolveResourcesDir(context), "bin", "whisper-npu-win32-arm64");
+  const isWindowsArm64 = context.electronPlatformName === "win32" && Arch[context.arch] === "arm64";
+  if (!isWindowsArm64) {
+    if (fs.existsSync(runtimeDir)) {
+      fs.rmSync(runtimeDir, { recursive: true, force: true });
+      console.log("  afterPack: removed the Windows on Arm NPU runtime from a non-arm64 build");
+    }
+    return;
+  }
+  const missing = WHISPER_NPU_RUNTIME_FILES.filter(
+    (name) => !fs.existsSync(path.join(runtimeDir, name))
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `afterPack: ${runtimeDir} is missing ${missing.join(", ")} — run npm run compile:npu-server from a VS ARM64 developer shell; the NPU acceleration option would never appear`
+    );
+  }
+}
+
 function verifyUnpackedBinaries(context) {
   const unpackedDir = path.join(resolveResourcesDir(context), "app.asar.unpacked");
   const unpackedModulesDir = path.join(unpackedDir, "node_modules");
@@ -318,6 +350,7 @@ exports.default = async function (context) {
   stripOnnxruntimeBinaries(context);
   wrapLinuxBinary(context);
   verifyMeetingAecHelper(context);
+  verifyWhisperNpuRuntime(context);
   verifyUnpackedBinaries(context);
   registerMacResourceBinariesForSigning(context);
 };

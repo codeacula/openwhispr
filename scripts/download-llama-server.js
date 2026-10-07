@@ -40,6 +40,13 @@ const BINARIES = {
     outputName: "llama-server-win32-x64-cpu.exe",
     libPattern: "*.dll",
   },
+  "win32-arm64-cpu": {
+    platformArch: "win32-arm64",
+    assetPattern: /^llama-.*-bin-win-cpu-arm64\.zip$/,
+    binaryPath: "build/bin/llama-server.exe",
+    outputName: "llama-server-win32-arm64-cpu.exe",
+    libPattern: "*.dll",
+  },
   "linux-x64-cpu": {
     platformArch: "linux-x64",
     assetPattern: /^llama-.*-bin-ubuntu-x64\.tar\.gz$/,

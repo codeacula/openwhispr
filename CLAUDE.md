@@ -55,6 +55,7 @@ OpenWhispr is an Electron-based desktop dictation application that uses whisper.
 - **globe-listener.swift**: Swift source for macOS Globe/Fn key detection
 - **macos-window-bounds.swift**: Swift source for the System Settings window reporter used by the onboarding permission guide. Prints the dialog's bounds, whether a sheet or authorization prompt is in front, which app owns the front window (`settings` / `self` / `other`, attributed by process because window owner names are localized) and whether System Settings is running. CoreGraphics window list only, so it needs neither Accessibility nor Screen Recording
 - **bin/**: Directory for compiled native binaries (whisper-cpp, nircmd, key/mic listeners)
+- **native/whisper-npu-server/**: C++ source for the Windows on Arm NPU transcription server (see Whisper on the Snapdragon NPU)
 
 ### Helper Modules (src/helpers/)
 
@@ -160,6 +161,7 @@ OpenWhispr is an Electron-based desktop dictation application that uses whisper.
 - **menuManager.js**: Application menu management
 - **tray.js**: System tray icon and menu
 - **whisper.js**: Local whisper.cpp integration and model management
+- **whisperNpuManager.js**: Whisper on the Snapdragon NPU (Windows on Arm): bundled runtime lookup, NPU probe, per-model AI Hub downloads (see Whisper on the Snapdragon NPU)
 - **parakeet.js**: NVIDIA Parakeet model management via sherpa-onnx
 - **parakeetServer.js**: sherpa-onnx CLI wrapper for transcription
 - **qdrantManager.js**: Qdrant vector DB sidecar process lifecycle (spawn, health check, shutdown)
@@ -315,6 +317,7 @@ Offline semantic search that finds notes by meaning, not just keywords. Used by 
 - **build-globe-listener.js**: Compiles macOS Globe key listener from Swift source
 - **build-macos-mic-listener.js**: Compiles macOS mic listener from Swift source
 - **build-macos-window-bounds.js**: Compiles the System Settings window reporter from Swift source
+- **build-whisper-npu-server.js**: Builds `native/whisper-npu-server` on Windows on Arm (pinned cpp-httplib, nlohmann/json, ONNX Runtime and Qualcomm QNN NuGet packages, sha256-checked) and stages it with its runtime in `resources/bin/whisper-npu-win32-arm64/`; `--zip` also packs it. Needs a VS ARM64 developer shell; exits quietly on every other platform
 - **build-windows-key-listener.js**: Compiles Windows key listener (for local development)
 - **run-electron.js**: Development script to launch Electron with proper environment
 - **lib/download-utils.js**: Shared utilities for downloading and extracting files
@@ -774,6 +777,19 @@ Rows in the `actions` table (built-ins seeded from `src/helpers/builtinActions.j
 - The default template is the built-in Detailed Notes, shown as "AI Summary" and listed first (launch re-applies the built-in order). Invariant: compiled from its sections, it equals the flat 1.10.2 prompt it replaced, but for the closing rule on material with nothing to summarize (`test/helpers/templatePrompts.test.js`); a built-in's `previousPrompts` only upgrades rows that are still flat
 - For material with nothing substantive (only greetings, filler or recording checks), sectioned templates, Generate Notes and a summary action writing a first summary ask the model to answer `NOTHING_TO_SUMMARIZE`; custom context-only templates and flat built-ins edited before this rule keep their own rules. A reply that is the marker (bare, fenced, emphasised or after a short sentence) outside a thinking block writes nothing; a summary that merely contains it is saved, and the runner shows `notes.actions.errors.nothingToSummarize` as a neutral notice (`notice` on the error event) instead of saving a placeholder summary
 - UI: `TemplatePicker` opens from the chevron in the AI Summary tab, which names the note's template; the "Generate AI Summary" callout (runs the note's template, else the default), `ActionChips` above the ask bar (the first four actions, then All actions), a `/` menu in the note composers (`slashCommands` on `ChatInput`), the sidebar chat's quick-action pills, and `ActionManagerDialog` (Templates | Actions). A new action's output is Auto, Chat or AI summary (a saved one offers only the last two); Auto asks the note model on save (`inferActionOutput`) and stores chat or summary, falling back to chat. A run that writes the summary is undoable for 6 s instead of asking first: the runner queues the fields it overwrote (`appliedEvents`) and `BackgroundActionToastListener` shows the Undo toast
+
+### 20. Whisper on the Snapdragon NPU (Windows on Arm)
+
+On Snapdragon X machines, local Whisper can run on the Hexagon NPU instead of the CPU (Large-V3-Turbo: ~2 s for 33 s of audio on the NPU vs ~22 s on the CPU). It is a third acceleration backend beside the CUDA and Vulkan packs, with one difference: the NPU runs its own build of each model.
+
+- **Server**: `native/whisper-npu-server` (C++) speaks the subset of whisper-server's HTTP API the app uses (`GET /`, `POST /inference` with a 16 kHz mono PCM16 WAV, `{text, language}` back) and ignores whisper-server options it has no use for, so `whisperServer.js` drives it unchanged. It loads `onnxruntime.dll` by full path (never the System32 copy, #2054), registers Qualcomm's QNN execution provider plugin and runs the encoder and a one-token decoder step on the NPU (`session.disable_cpu_ep_fallback`). Greedy decoding with Whisper's language detection, no-speech rule and a repetition guard; audio over 30 s is cut at the quietest 20 ms in the last 5 s of each window. Initial prompts (custom dictionary) and VAD are not supported yet: the prompt is logged once and ignored. `--probe` prints the execution-provider devices as JSON and exits 0 when there is an NPU, 2 when not
+- **Runtime**: bundled only in the win32-arm64 installer (`resources/bin/whisper-npu-win32-arm64/`: the server, ONNX Runtime 1.30, the QNN provider with HTP v73 (X Elite/Plus) and v81 (X2) libraries, the arm64 MSVC runtime, licenses; ~67 MB). Qualcomm's license allows redistributing the QNN libraries only as part of the app, never as a standalone download, so there is no pack to download. `QnnHtpPrepare.dll` (170 MB, on-device compilation) is left out; the provider then logs that it uses its HNRD path, which runs precompiled models at full speed. `afterPack.js` fails an arm64 build without the runtime and strips it from every other target
+- **Models**: Qualcomm AI Hub `precompiled_qnn_onnx` exports (v0.64.0, compiled for ONNX Runtime 1.30 / QAIRT 2.50) for tiny, base, small, medium and turbo, per NPU generation, plus the matching Hugging Face `tokenizer.json` pinned by commit and sha256: `whisperNpuModels` in `modelRegistryData.json`. Downloaded from Qualcomm on demand into `<cache>/whisper-npu-models/<model>/` with an `.installed.json` marker naming the asset URL (a model built for the other NPU generation does not count as installed)
+- **Selection**: `resolveGpuStartOptions(modelName)` returns `npuModelDir`/`npuServerPath` when the NPU build of that model is installed, unless `WHISPER_NPU_ENABLED=false` or `npu` is in `WHISPER_GPU_FAILED` (an installed model implies intent, like a GPU pack, #1340); it takes precedence over CUDA/Vulkan and returns explicit nulls otherwise, so replayed start options can't keep a stale NPU. The ggml model stays the server's `modelPath` and is what the CPU fallback loads, so the card only offers the NPU once the CPU model is installed
+- **Fallback**: a failed NPU start or an NPU server that dies mid-request emits `npu-fallback`, records `npu` in `WHISPER_GPU_FAILED` with `WHISPER_GPU_FAILED_REASON_NPU`, and restarts on the CPU server; `whisper-gpu-retry` clears it like the GPU failures
+- **UI**: `WhisperNpuCard` (in `TranscriptionModelPicker`, Windows only) shows when the probe finds an NPU and the selected model has an NPU build: offer → download (`npu-whisper-download-progress`) → active/ready from the live server status (`gpuBackend: "npu"`) → failure with reason and Retry. i18n keys `npu.*`; the fallback toast uses `app.toasts.npuFallback.*`
+- **IPC**: `get-npu-whisper-status`, `download-npu-whisper-model`, `cancel-npu-whisper-download`, `delete-npu-whisper-model` (stops the server first when it has that model mapped)
+- **Tests**: `test/helpers/whisperNpuManager.test.js`, NPU cases in `whisperGpuResolve.test.js` and `whisperServerGpuFailureReason.test.js`
 
 ## Development Guidelines
 

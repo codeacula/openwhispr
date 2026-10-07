@@ -13,6 +13,7 @@ const WINDOWS_STATUS_MIN = 0x80000000;
 const WHISPER_GPU_FAILURE_REASON_KEYS = Object.freeze({
   cuda: "WHISPER_GPU_FAILED_REASON_CUDA",
   vulkan: "WHISPER_GPU_FAILED_REASON_VULKAN",
+  npu: "WHISPER_GPU_FAILED_REASON_NPU",
 });
 
 // Most specific first; the capture group is the reason. Formats are from the
@@ -30,6 +31,9 @@ const CAUSE_PATTERNS = [
   /(vk::\S+: Error\w+)/,
   // ggml-cuda.cu ggml_cuda_error: "CUDA error: <cudaGetErrorString>"
   /(CUDA error: .+)/,
+  // native/whisper-npu-server/src/main.cpp, e.g. "whisper-npu-server: cannot
+  // load model <dir>: no Qualcomm NPU found by the QNN execution provider"
+  /whisper-npu-server: ((?:runtime error|cannot load model|cannot listen|transcription failed).+)/,
 ];
 // Any other error line; the first one is the closest to the cause.
 const ERROR_LINE = /\b(?:error|failed|failure|exception|abort(?:ed)?)\b/i;

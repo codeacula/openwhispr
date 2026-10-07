@@ -3676,6 +3676,19 @@
     "dismiss": "後で",
     "cancel": "キャンセル"
   },
+  "npu": {
+    "banner": "このモデルを Snapdragon NPU で実行",
+    "bannerDescription": "CPU より数倍高速で、バッテリー消費も大幅に抑えられます。Qualcomm から {{size}} をダウンロードします。",
+    "enableButton": "NPU を有効化",
+    "downloadLabel": "NPU モデル",
+    "active": "NPU アクセラレーション有効",
+    "ready": "NPU アクセラレーション準備完了",
+    "activating": "NPU を有効化中...",
+    "activationFailed": "NPU アクセラレーションを利用できません",
+    "activationFailedDescription": "OpenWhispr は CPU 文字起こしに切り替えました。",
+    "retryActivation": "NPU アクセラレーションを再試行",
+    "downloadFailed": "NPU モデルをダウンロードできませんでした。"
+  },
   "app": {
     "toasts": {
       "hotkeyChanged": {
@@ -3696,6 +3709,11 @@
         "title": "GPU アクセラレーションを利用できません",
         "description": "OpenWhispr は CPU 文字起こしに切り替えました。",
         "retry": "GPU を再試行"
+      },
+      "npuFallback": {
+        "title": "NPU アクセラレーションを利用できません",
+        "description": "OpenWhispr は CPU 文字起こしに切り替えました。",
+        "retry": "NPU を再試行"
       },
       "gpuPackMigration": {
         "title": "GPU パックの再ダウンロードが必要です",

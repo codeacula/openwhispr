@@ -3676,6 +3676,19 @@
     "dismiss": "Non ora",
     "cancel": "Annulla"
   },
+  "npu": {
+    "banner": "Esegui questo modello sulla NPU Snapdragon",
+    "bannerDescription": "Più volte più veloce della CPU e molto più leggera sulla batteria. Scarica {{size}} da Qualcomm.",
+    "enableButton": "Attiva NPU",
+    "downloadLabel": "Modello NPU",
+    "active": "Accelerazione NPU attiva",
+    "ready": "Accelerazione NPU pronta",
+    "activating": "Attivazione NPU...",
+    "activationFailed": "Accelerazione NPU non disponibile",
+    "activationFailedDescription": "OpenWhispr sta usando la trascrizione CPU.",
+    "retryActivation": "Riprova l'accelerazione NPU",
+    "downloadFailed": "Impossibile scaricare il modello NPU."
+  },
   "app": {
     "toasts": {
       "hotkeyChanged": {
@@ -3696,6 +3709,11 @@
         "title": "Accelerazione GPU non disponibile",
         "description": "OpenWhispr sta usando la trascrizione CPU.",
         "retry": "Riprova GPU"
+      },
+      "npuFallback": {
+        "title": "Accelerazione NPU non disponibile",
+        "description": "OpenWhispr sta usando la trascrizione CPU.",
+        "retry": "Riprova NPU"
       },
       "gpuPackMigration": {
         "title": "Il pacchetto GPU deve essere scaricato di nuovo",

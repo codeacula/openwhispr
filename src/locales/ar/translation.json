@@ -1837,6 +1837,11 @@
         "description": "انتقل OpenWhispr إلى استخدام وحدة المعالجة المركزية (CPU) للتفريغ الصوتي.",
         "retry": "إعادة تجربة GPU"
       },
+      "npuFallback": {
+        "title": "تسريع NPU غير متوفر",
+        "description": "انتقل OpenWhispr إلى استخدام وحدة المعالجة المركزية (CPU) للتفريغ الصوتي.",
+        "retry": "إعادة تجربة NPU"
+      },
       "gpuPackMigration": {
         "title": "تحتاج حزمة GPU إلى إعادة التنزيل",
         "description": "لا يمكن لهذا الإصدار استخدام حزمة GPU السابقة ({{packs}}). أعد تنزيلها من الإعدادات لإعادة تشغيل تسريع GPU."
@@ -4755,6 +4760,19 @@
     "remove": "إزالة",
     "dismiss": "ليس الآن",
     "cancel": "إلغاء"
+  },
+  "npu": {
+    "banner": "تشغيل هذا النموذج على وحدة NPU في Snapdragon",
+    "bannerDescription": "أسرع بعدة مرات من وحدة المعالجة المركزية (CPU) وأقل استهلاكًا للبطارية بكثير. سيتم تنزيل {{size}} من Qualcomm.",
+    "enableButton": "تفعيل NPU",
+    "downloadLabel": "نموذج NPU",
+    "active": "تسريع NPU نشط",
+    "ready": "تسريع NPU جاهز",
+    "activating": "جاري تفعيل NPU...",
+    "activationFailed": "تسريع NPU غير متاح",
+    "activationFailedDescription": "انتقل OpenWhispr إلى استخدام وحدة المعالجة المركزية (CPU) للتفريغ الصوتي.",
+    "retryActivation": "إعادة محاولة تفعيل NPU",
+    "downloadFailed": "تعذّر تنزيل نموذج NPU."
   },
   "assistant": {
     "panel": {

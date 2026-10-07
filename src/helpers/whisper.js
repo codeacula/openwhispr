@@ -2,6 +2,7 @@ const fs = require("fs");
 const fsPromises = require("fs").promises;
 const path = require("path");
 const debugLogger = require("./debugLogger");
+const { resolveFfmpegStaticPath } = require("./ffmpegStaticPath");
 const {
   downloadFile,
   createDownloadSignal,
@@ -69,11 +70,13 @@ class WhisperManager {
     this._rewarmInFlight = false;
     this._cudaBinaryManager = null;
     this._vulkanBinaryManager = null;
+    this._npuManager = null;
   }
 
-  setGpuBinaryManagers({ cuda, vulkan }) {
+  setGpuBinaryManagers({ cuda, vulkan, npu }) {
     this._cudaBinaryManager = cuda || null;
     this._vulkanBinaryManager = vulkan || null;
+    this._npuManager = npu || null;
   }
 
   // The GPU backend for every server start is resolved fresh from the current
@@ -87,8 +90,14 @@ class WhisperManager {
   // when the server falls back to CPU); they stay off until the user retries
   // or re-downloads, so a doomed backend isn't re-attempted — and its model
   // reload re-paid — on every launch.
-  resolveGpuStartOptions() {
+  //
+  // The NPU (Windows on Snapdragon) is resolved per model, since it runs its
+  // own build of each model; non-NPU results carry explicit nulls so options
+  // replayed from an earlier NPU start cannot keep it.
+  resolveGpuStartOptions(modelName = this.currentServerModel) {
     const failed = resolveFailedGpuBackends(process.env.WHISPER_GPU_FAILED);
+    const npu = this.resolveNpuStartOptions(modelName, failed);
+    if (npu) return { useCuda: false, useVulkan: false, ...npu };
     const useCuda =
       (process.env.WHISPER_CUDA_ENABLED || "").toLowerCase() !== "false" &&
       !failed.includes("cuda") &&
@@ -98,7 +107,17 @@ class WhisperManager {
       (process.env.WHISPER_VULKAN_ENABLED || "").toLowerCase() !== "false" &&
       !failed.includes("vulkan") &&
       !!this._vulkanBinaryManager?.isDownloaded();
-    return { useCuda, useVulkan };
+    return { useCuda, useVulkan, npuModelDir: null, npuServerPath: null };
+  }
+
+  // Like a GPU pack, an NPU model on disk implies intent (#1340): it engages
+  // unless WHISPER_NPU_ENABLED is "false" or the NPU failed on this machine.
+  resolveNpuStartOptions(modelName, failed = []) {
+    const npu = this._npuManager;
+    if (!npu || !modelName || failed.includes("npu")) return null;
+    if ((process.env.WHISPER_NPU_ENABLED || "").toLowerCase() === "false") return null;
+    if (!npu.isSupported() || !npu.isModelDownloaded(modelName)) return null;
+    return { npuModelDir: npu.getModelDir(modelName), npuServerPath: npu.getServerBinaryPath() };
   }
 
   // The pack the settings card describes, so the card never disagrees with the
@@ -125,7 +144,10 @@ class WhisperManager {
   async restartServerWithGpuPreference(modelName = this.currentServerModel) {
     if (!modelName || this.serverManager.isRemote) return { success: true, restarted: false };
 
-    const options = { ...this.serverManager.lastStartOptions, ...this.resolveGpuStartOptions() };
+    const options = {
+      ...this.serverManager.lastStartOptions,
+      ...this.resolveGpuStartOptions(modelName),
+    };
     await this.stopServer();
     const result = await this.startServer(modelName, options);
     return { ...result, restarted: true };
@@ -180,7 +202,7 @@ class WhisperManager {
 
       // Pre-warm whisper-server if local mode enabled (eliminates 2-5s cold-start delay)
       const { localTranscriptionProvider, whisperModel } = settings;
-      const { useCuda, useVulkan } = this.resolveGpuStartOptions();
+      const gpuOptions = this.resolveGpuStartOptions(whisperModel);
 
       if (
         localTranscriptionProvider === "whisper" &&
@@ -193,13 +215,14 @@ class WhisperManager {
           debugLogger.info("Pre-warming whisper-server", {
             model: whisperModel,
             modelPath,
-            cuda: useCuda,
-            vulkan: useVulkan,
+            cuda: gpuOptions.useCuda,
+            vulkan: gpuOptions.useVulkan,
+            npu: !!gpuOptions.npuModelDir,
           });
 
           try {
             const serverStartTime = Date.now();
-            await this.serverManager.start(modelPath, { useCuda, useVulkan });
+            await this.serverManager.start(modelPath, gpuOptions);
             this.currentServerModel = whisperModel;
 
             debugLogger.info("whisper-server pre-warmed successfully", {
@@ -351,7 +374,7 @@ class WhisperManager {
     // otherwise be rejected by start()'s no-op guard and reload the model on
     // the first dictation. See #766. GPU flags are re-resolved so a backend
     // that failed since is not re-attempted.
-    const options = { ...sm.lastStartOptions, ...this.resolveGpuStartOptions() };
+    const options = { ...sm.lastStartOptions, ...this.resolveGpuStartOptions(modelName) };
     this._rewarmInFlight = true;
     try {
       debugLogger.info("Re-warming whisper-server after wake from sleep", { model: modelName });
@@ -445,7 +468,7 @@ class WhisperManager {
     }
 
     await this.serverManager.start(modelPath, {
-      ...this.resolveGpuStartOptions(),
+      ...this.resolveGpuStartOptions(model),
       vadEnabled,
       vadModelPath,
       vadConfig: options.vadConfig || null,
@@ -817,7 +840,7 @@ class WhisperManager {
     let ffmpegPath;
 
     try {
-      ffmpegPath = require("ffmpeg-static");
+      ffmpegPath = resolveFfmpegStaticPath();
       ffmpegPath = path.normalize(ffmpegPath);
 
       if (process.platform === "win32" && !ffmpegPath.endsWith(".exe")) {

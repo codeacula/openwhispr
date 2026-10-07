@@ -37,6 +37,13 @@ const BINARIES = {
     binaryName: "qdrant.exe",
     outputName: "qdrant-win32-x64.exe",
   },
+  // Qdrant publishes no Windows aarch64 build; the x64 binary runs under
+  // Windows on Arm's x64 emulation. Named for arm64 so qdrantManager finds it.
+  "win32-arm64": {
+    archiveName: "qdrant-x86_64-pc-windows-msvc.zip",
+    binaryName: "qdrant.exe",
+    outputName: "qdrant-win32-arm64.exe",
+  },
 };
 
 const BIN_DIR = path.join(__dirname, "..", "resources", "bin");

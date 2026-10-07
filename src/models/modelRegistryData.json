@@ -249,6 +249,98 @@
       "descriptionKey": "models.descriptions.whisper.turbo"
     }
   },
+  "whisperNpuModels": {
+    "tiny": {
+      "aiHubModel": "whisper_tiny",
+      "tokenizer": {
+        "url": "https://huggingface.co/openai/whisper-small/resolve/973afd24965f72e36ca33b3055d56a652f456b4d/tokenizer.json",
+        "sha256": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+        "sizeBytes": 2480466
+      },
+      "assets": {
+        "v73": {
+          "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/whisper_tiny/releases/v0.64.0/whisper_tiny-precompiled_qnn_onnx-float-qualcomm_snapdragon_x_elite.zip",
+          "sizeBytes": 105748202
+        },
+        "v81": {
+          "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/whisper_tiny/releases/v0.64.0/whisper_tiny-precompiled_qnn_onnx-float-qualcomm_snapdragon_x2_elite.zip",
+          "sizeBytes": 105846623
+        }
+      }
+    },
+    "base": {
+      "aiHubModel": "whisper_base",
+      "tokenizer": {
+        "url": "https://huggingface.co/openai/whisper-small/resolve/973afd24965f72e36ca33b3055d56a652f456b4d/tokenizer.json",
+        "sha256": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+        "sizeBytes": 2480466
+      },
+      "assets": {
+        "v73": {
+          "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/whisper_base/releases/v0.64.0/whisper_base-precompiled_qnn_onnx-float-qualcomm_snapdragon_x_elite.zip",
+          "sizeBytes": 180670140
+        },
+        "v81": {
+          "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/whisper_base/releases/v0.64.0/whisper_base-precompiled_qnn_onnx-float-qualcomm_snapdragon_x2_elite.zip",
+          "sizeBytes": 180799393
+        }
+      }
+    },
+    "small": {
+      "aiHubModel": "whisper_small",
+      "tokenizer": {
+        "url": "https://huggingface.co/openai/whisper-small/resolve/973afd24965f72e36ca33b3055d56a652f456b4d/tokenizer.json",
+        "sha256": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+        "sizeBytes": 2480466
+      },
+      "assets": {
+        "v73": {
+          "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/whisper_small/releases/v0.64.0/whisper_small-precompiled_qnn_onnx-float-qualcomm_snapdragon_x_elite.zip",
+          "sizeBytes": 572516378
+        },
+        "v81": {
+          "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/whisper_small/releases/v0.64.0/whisper_small-precompiled_qnn_onnx-float-qualcomm_snapdragon_x2_elite.zip",
+          "sizeBytes": 572880950
+        }
+      }
+    },
+    "medium": {
+      "aiHubModel": "whisper_medium",
+      "tokenizer": {
+        "url": "https://huggingface.co/openai/whisper-small/resolve/973afd24965f72e36ca33b3055d56a652f456b4d/tokenizer.json",
+        "sha256": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+        "sizeBytes": 2480466
+      },
+      "assets": {
+        "v73": {
+          "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/whisper_medium/releases/v0.64.0/whisper_medium-precompiled_qnn_onnx-float-qualcomm_snapdragon_x_elite.zip",
+          "sizeBytes": 1518600649
+        },
+        "v81": {
+          "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/whisper_medium/releases/v0.64.0/whisper_medium-precompiled_qnn_onnx-float-qualcomm_snapdragon_x2_elite.zip",
+          "sizeBytes": 1519749558
+        }
+      }
+    },
+    "turbo": {
+      "aiHubModel": "whisper_large_v3_turbo",
+      "tokenizer": {
+        "url": "https://huggingface.co/openai/whisper-large-v3-turbo/resolve/41f01f3fe87f28c78e2fbf8b568835947dd65ed9/tokenizer.json",
+        "sha256": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd",
+        "sizeBytes": 2710337
+      },
+      "assets": {
+        "v73": {
+          "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/whisper_large_v3_turbo/releases/v0.64.0/whisper_large_v3_turbo-precompiled_qnn_onnx-float-qualcomm_snapdragon_x_elite.zip",
+          "sizeBytes": 2018038680
+        },
+        "v81": {
+          "url": "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/whisper_large_v3_turbo/releases/v0.64.0/whisper_large_v3_turbo-precompiled_qnn_onnx-float-qualcomm_snapdragon_x2_elite.zip",
+          "sizeBytes": 2019911136
+        }
+      }
+    }
+  },
   "transcriptionProviders": [
     {
       "id": "openai",

@@ -14,6 +14,7 @@ const {
 const {
   WHISPER_CPP_TAG,
   WINDOWS_MSVC_RUNTIME_LIBRARIES,
+  WINDOWS_ARM64_MSVC_RUNTIME_LIBRARIES,
 } = require("../src/helpers/whisperCppRelease");
 
 const WHISPER_CPP_REPO = "OpenWhispr/whisper.cpp";
@@ -40,6 +41,13 @@ const BINARIES = {
     // machines lacking the VC++ redistributable die at load with 0xC0000135 (CUS-113)
     libPattern: "*.dll",
     requiredLibraries: WINDOWS_MSVC_RUNTIME_LIBRARIES,
+  },
+  "win32-arm64": {
+    zipName: "whisper-server-win32-arm64-cpu.zip",
+    binaryName: "whisper-server-win32-arm64-cpu.exe",
+    outputName: "whisper-server-win32-arm64.exe",
+    libPattern: "*.dll",
+    requiredLibraries: WINDOWS_ARM64_MSVC_RUNTIME_LIBRARIES,
   },
   "linux-x64": {
     zipName: "whisper-server-linux-x64-cpu.zip",

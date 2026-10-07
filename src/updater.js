@@ -68,6 +68,19 @@ class UpdateManager {
       autoUpdater.channel = nativeArch === "arm64" ? "latest-arm64" : "latest-x64";
     }
 
+    // Windows arm64 builds publish latest-arm64.yml beside the x64 latest.yml,
+    // so x64 installs keep the default channel. An x64 install running under
+    // Windows on Arm's emulation moves to the arm64 channel and self-heals.
+    if (
+      process.platform === "win32" &&
+      (process.arch === "arm64" || require("electron").app?.runningUnderARM64Translation)
+    ) {
+      if (process.arch !== "arm64") {
+        console.log("🔄 x64 emulation detected — switching update channel to arm64");
+      }
+      autoUpdater.channel = "latest-arm64";
+    }
+
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.logger = console;

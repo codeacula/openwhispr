@@ -3,6 +3,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const debugLogger = require("./debugLogger");
+const { resolveFfmpegStaticPath } = require("./ffmpegStaticPath");
 const { createAbortError } = require("./abortError");
 
 let cachedFFmpegPath = null;
@@ -11,7 +12,7 @@ function getFFmpegPath() {
   if (cachedFFmpegPath) return cachedFFmpegPath;
 
   try {
-    let ffmpegPath = require("ffmpeg-static");
+    let ffmpegPath = resolveFfmpegStaticPath();
     ffmpegPath = path.normalize(ffmpegPath);
 
     if (process.platform === "win32" && !ffmpegPath.endsWith(".exe")) {

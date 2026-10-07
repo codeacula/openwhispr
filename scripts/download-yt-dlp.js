@@ -26,6 +26,11 @@ const BINARIES = {
     outputName: "yt-dlp-win32-x64.exe",
     sha256: "52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8",
   },
+  "win32-arm64": {
+    assetName: "yt-dlp_arm64.exe",
+    outputName: "yt-dlp-win32-arm64.exe",
+    sha256: "1525690b037ecc0bb677e38e7147b0025179cbc9a8d0c57264e3100b18099280",
+  },
   "linux-x64": {
     assetName: "yt-dlp_linux",
     outputName: "yt-dlp-linux-x64",

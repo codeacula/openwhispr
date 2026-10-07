@@ -26,8 +26,15 @@ const BINARY = {
   cuda: "/fake/whisper-server-cuda",
   vulkan: "/fake/whisper-server-vulkan",
 };
+// The NPU server and its model are real paths: _doStart checks they exist
+const npuServerPath = path.join(userDataDir, "whisper-npu-server.exe");
+const npuModelDir = path.join(userDataDir, "npu-turbo");
+fs.writeFileSync(npuServerPath, "");
+fs.mkdirSync(npuModelDir);
 // Binary path -> how its fake process behaves
 const behaviours = new Map();
+// Every spawn, in order
+const spawns = [];
 const warnings = [];
 
 function fakeWhisperServer({ stderr = "", exit = null, launchError = null, healthy = false } = {}) {
@@ -77,7 +84,13 @@ Module._load = function loadWithFakeProcess(request, parent, isMain) {
   }
   if (parent?.filename === serverModulePath) {
     if (request === "child_process") {
-      return { ...childProcess, spawn: (binary) => fakeWhisperServer(behaviours.get(binary)) };
+      return {
+        ...childProcess,
+        spawn: (binary, args) => {
+          spawns.push({ binary, args });
+          return fakeWhisperServer(behaviours.get(binary));
+        },
+      };
     }
     if (request === "./debugLogger") {
       const ignore = () => {};
@@ -101,6 +114,7 @@ try {
 function createManager(t) {
   behaviours.clear();
   warnings.length = 0;
+  spawns.length = 0;
   behaviours.set(BINARY.cpu, { healthy: true });
   const manager = new WhisperServerManager();
   manager.getServerBinaryPath = (options = {}) =>
@@ -195,4 +209,40 @@ test("a Vulkan server that crashes on Windows reports the status code in hex", a
   await manager.start(modelPath, { useVulkan: true });
 
   assert.deepEqual(events, [{ reason: "exit code 0xC0000005" }]);
+});
+
+test("an NPU server that cannot load falls back to the CPU server on the ggml model", async (t) => {
+  const manager = createManager(t);
+  behaviours.set(npuServerPath, {
+    stderr:
+      "whisper-npu-server: cannot load model D:\\npu-turbo: no Qualcomm NPU found by the QNN execution provider\n",
+    exit: { code: 2 },
+  });
+  const events = [];
+  manager.on("npu-fallback", (payload) => events.push(payload));
+
+  await manager.start(modelPath, { npuModelDir, npuServerPath });
+
+  assert.equal(manager.useNpu, false, "the CPU server took over");
+  assert.equal(manager.getStatus().gpuBackend, null);
+  assert.deepEqual(
+    spawns.map(({ binary, args }) => [binary, args[args.indexOf("--model") + 1]]),
+    [
+      [npuServerPath, npuModelDir],
+      [BINARY.cpu, modelPath],
+    ]
+  );
+  assert.equal(events.length, 1);
+  assert.match(events[0].reason, /cannot load model .*no Qualcomm NPU found/);
+});
+
+test("a healthy NPU server reports the npu backend and stays put on the next start", async (t) => {
+  const manager = createManager(t);
+  behaviours.set(npuServerPath, { healthy: true });
+
+  await manager.start(modelPath, { npuModelDir, npuServerPath });
+  assert.equal(manager.getStatus().gpuBackend, "npu");
+
+  await manager.start(modelPath, { npuModelDir, npuServerPath });
+  assert.equal(spawns.length, 1, "the same model and backend reuses the running server");
 });

@@ -25,7 +25,8 @@ const {
 
 const REPO = "OpenWhispr/openwhispr";
 const TAG_PREFIX = "windows-mic-listener-v";
-const ZIP_NAME = "windows-mic-listener-win32-x64.zip";
+// Prebuilt zips are published per arch (win32-x64, win32-arm64).
+const ZIP_NAME = `windows-mic-listener-win32-${process.env.TARGET_ARCH || process.arch}.zip`;
 const BINARY_NAME = "windows-mic-listener.exe";
 const SOURCE_FILE = path.join(__dirname, "..", "resources", "windows-mic-listener.c");
 

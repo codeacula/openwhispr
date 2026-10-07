@@ -8,6 +8,7 @@ process.env.NODE_ENV = "test";
 const updaterModulePath = require.resolve("../../src/updater.js");
 const originalLoad = Module._load;
 const originalPlatform = process.platform;
+const originalArch = process.arch;
 const originalAppImage = process.env.APPIMAGE;
 
 const STARTUP_DELAY_MS = 3000;
@@ -44,11 +45,11 @@ function makeAutoUpdater({ offline = false } = {}) {
 
 // updater.js requires electron and child_process lazily (constructor, cleanup(),
 // Rosetta probe), so the mocks stay installed until afterEach.
-function createUpdateManager(autoUpdater) {
+function createUpdateManager(autoUpdater, { app } = {}) {
   delete require.cache[updaterModulePath];
   Module._load = function loadWithMocks(request, parent, isMain) {
     if (request === "electron-updater") return { autoUpdater };
-    if (request === "electron") return { autoUpdater: { on() {}, removeListener() {} } };
+    if (request === "electron") return { app, autoUpdater: { on() {}, removeListener() {} } };
     if (request === "child_process") return { execSync: () => "0" };
     return originalLoad.call(this, request, parent, isMain);
   };
@@ -71,6 +72,10 @@ function setPlatform(platform) {
   Object.defineProperty(process, "platform", { value: platform, configurable: true });
 }
 
+function setArch(arch) {
+  Object.defineProperty(process, "arch", { value: arch, configurable: true });
+}
+
 beforeEach((t) => {
   t.mock.method(console, "log", () => {});
   t.mock.method(console, "error", () => {});
@@ -82,6 +87,7 @@ beforeEach((t) => {
 afterEach(() => {
   Module._load = originalLoad;
   setPlatform(originalPlatform);
+  setArch(originalArch);
   if (originalAppImage === undefined) delete process.env.APPIMAGE;
   else process.env.APPIMAGE = originalAppImage;
 });
@@ -207,6 +213,24 @@ test("on macOS and Windows the updater reports itself as supported", async () =>
     setPlatform(platform);
     const manager = createUpdateManager(makeAutoUpdater());
     assert.equal((await manager.getUpdateStatus()).isSupported, true, platform);
+    manager.cleanup();
+  }
+});
+
+test("Windows arm64, and x64 under Arm emulation, read latest-arm64.yml; native x64 keeps latest.yml", () => {
+  setPlatform("win32");
+  const cases = [
+    { arch: "arm64", translated: false, channel: "latest-arm64" },
+    { arch: "x64", translated: true, channel: "latest-arm64" },
+    { arch: "x64", translated: false, channel: undefined },
+  ];
+  for (const { arch, translated, channel } of cases) {
+    setArch(arch);
+    const autoUpdater = makeAutoUpdater();
+    const manager = createUpdateManager(autoUpdater, {
+      app: { runningUnderARM64Translation: translated },
+    });
+    assert.equal(autoUpdater.channel, channel, `${arch}, translated: ${translated}`);
     manager.cleanup();
   }
 });
