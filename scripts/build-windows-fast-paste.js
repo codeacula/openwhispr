@@ -89,6 +89,13 @@ async function tryDownload() {
     return false;
   }
 
+  // A download that finds no asset for this arch keeps whatever is on disk, so
+  // a stale binary (another arch, an older build) would pass as downloaded and
+  // stop the compile below. It is out of date anyway, or main() returned early.
+  if (fs.existsSync(outputBinary)) {
+    discardStaleBinary("Removed outdated fast-paste binary before downloading");
+  }
+
   const result = spawnSync(process.execPath, [downloadScript, "--force"], {
     stdio: "inherit",
     cwd: projectRoot,

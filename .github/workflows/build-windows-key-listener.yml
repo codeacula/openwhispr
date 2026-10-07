@@ -14,21 +14,41 @@ on:
         required: false
         default: '1.0.0'
         type: string
+      arch:
+        description: 'Architectures to build and upload (all also rebuilds and replaces the released x64 zip)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - arm64
+          - x64
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: windows-latest
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each arch builds on its own runner, so the checks below run the binary
+        # that ships. A push builds both; a dispatch can add just one arch's zip.
+        include: ${{ fromJSON(inputs.arch == 'arm64' && '[{"arch":"arm64","os":"windows-11-arm"}]' || inputs.arch == 'x64' && '[{"arch":"x64","os":"windows-latest"}]' || '[{"arch":"x64","os":"windows-latest"},{"arch":"arm64","os":"windows-11-arm"}]') }}
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup MSVC
         uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: ${{ matrix.arch }}
 
       - name: Setup MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
 
       - name: Compile Windows Key Listener
         run: |
@@ -46,16 +66,27 @@ jobs:
           }
         shell: pwsh
 
+      - name: Verify architecture
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("windows-key-listener.exe")
+          $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3c) + 4)
+          $expected = @{ x64 = 0x8664; arm64 = 0xAA64 }['${{ matrix.arch }}']
+          if ($machine -ne $expected) {
+            Write-Error ("windows-key-listener.exe is PE machine 0x{0:X4}, expected 0x{1:X4}" -f $machine, $expected)
+            exit 1
+          }
+        shell: pwsh
+
       - name: Create zip archive
         run: |
-          Compress-Archive -Path windows-key-listener.exe -DestinationPath windows-key-listener-win32-x64.zip
+          Compress-Archive -Path windows-key-listener.exe -DestinationPath windows-key-listener-win32-${{ matrix.arch }}.zip
         shell: pwsh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: windows-key-listener
-          path: windows-key-listener-win32-x64.zip
+          name: windows-key-listener-win32-${{ matrix.arch }}
+          path: windows-key-listener-win32-${{ matrix.arch }}.zip
 
       - name: Create or update release
         uses: softprops/action-gh-release@v3
@@ -66,7 +97,7 @@ jobs:
             Prebuilt Windows key listener binary for Push-to-Talk functionality.
 
             This binary uses Windows Low-Level Keyboard Hook to detect key press/release events.
-          files: windows-key-listener-win32-x64.zip
+          files: windows-key-listener-win32-${{ matrix.arch }}.zip
           make_latest: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

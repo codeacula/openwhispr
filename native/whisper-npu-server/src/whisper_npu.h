@@ -16,6 +16,10 @@ namespace whisper_npu {
 struct TranscribeOptions {
   // ISO code ("en", "de", ...) or "auto" to detect it from the first window
   std::string language = "auto";
+  // Initial prompt (OpenWhispr sends the custom dictionary): fed before
+  // <|startoftranscript|> so the decoder favors its spellings. Long prompts
+  // keep their last 64 tokens.
+  std::string prompt;
   // Whisper's no-speech rule: a window is silent when P(<|nospeech|>) exceeds
   // noSpeechThreshold and the average token log-probability is below
   // logprobThreshold.
@@ -28,6 +32,9 @@ struct TranscribeStats {
   double decoderSeconds = 0;
   int decoderSteps = 0;
   int windows = 0;
+  int promptTokens = 0;
+  // Windows decoded again without the prompt because it crowded the cache
+  int promptRetries = 0;
 };
 
 struct TranscribeResult {
@@ -53,10 +60,17 @@ class WhisperNpu {
   struct Window {
     std::vector<int> tokens;
     std::string language;
+    // Decoding stopped at the end of the self-attention cache, not at <|endoftext|>
+    bool ranOutOfCache = false;
   };
 
-  Window decodeWindow(const float* samples, size_t count, const std::string& language,
+  // Runs the encoder; its cross-attention cache stays in place for every
+  // decodeWindow() until the next window is encoded.
+  void encodeWindow(const float* samples, size_t count, TranscribeStats& stats);
+  Window decodeWindow(const std::string& language, const std::vector<int>& prompt,
                       TranscribeStats& stats, const TranscribeOptions& options);
+  std::string pickLanguage(const std::vector<float>& scores) const;
+  std::vector<int> promptTokens(const std::string& prompt) const;
   void runEncoder(const float* samples, size_t count);
   void resetDecoder();
   const std::vector<float>& step(int position, int token);

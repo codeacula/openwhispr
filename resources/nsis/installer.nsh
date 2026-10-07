@@ -27,7 +27,13 @@
 
 !macro customInstall
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="${SHERPA_FIREWALL_RULE}"'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="${SHERPA_FIREWALL_RULE}" dir=in action=block program="$INSTDIR\resources\bin\sherpa-onnx-ws-win32-x64.exe" enable=yes profile=any'
+  ; The x64 and arm64 installers ship the server under their own arch's name
+  Push $0
+  StrCpy $0 "$INSTDIR\resources\bin\sherpa-onnx-ws-win32-x64.exe"
+  IfFileExists "$INSTDIR\resources\bin\sherpa-onnx-ws-win32-arm64.exe" 0 +2
+    StrCpy $0 "$INSTDIR\resources\bin\sherpa-onnx-ws-win32-arm64.exe"
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="${SHERPA_FIREWALL_RULE}" dir=in action=block program="$0" enable=yes profile=any'
+  Pop $0
 !macroend
 
 !macro customUnInstall

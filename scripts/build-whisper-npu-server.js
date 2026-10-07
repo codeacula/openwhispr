@@ -88,7 +88,10 @@ const RUNTIME_FILES = {
     ["Qualcomm_LICENSE.pdf", "Qualcomm_LICENSE.pdf"],
   ],
 };
-const CRT_LIBRARIES = ["msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
+// What onnxruntime.dll imports. Not vcruntime140_1: nothing ARM64 imports it
+// (its exception handler is x64-only), and the copy in VS's arm64 CRT redist
+// folder is an ARM64EC image whose PE header reads x64.
+const CRT_LIBRARIES = ["msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll"];
 
 function log(message) {
   console.log(`[whisper-npu-server] ${message}`);
@@ -176,6 +179,7 @@ function sourceHash() {
   const hash = crypto.createHash("sha256");
   hash.update(JSON.stringify(PINS));
   hash.update(JSON.stringify(RUNTIME_FILES));
+  hash.update(JSON.stringify(CRT_LIBRARIES));
   const files = [
     path.join(helperRoot, "CMakeLists.txt"),
     ...fs

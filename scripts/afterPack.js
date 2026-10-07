@@ -298,6 +298,69 @@ function verifyWhisperNpuRuntime(context) {
   }
 }
 
+// PE IMAGE_FILE_HEADER.Machine values
+const PE_MACHINE_ARM64 = 0xaa64;
+
+// What a Windows on Arm build ships as x64/x86 on purpose: nothing upstream
+// publishes for arm64, and Windows runs them under its x64 emulation.
+const WINDOWS_ARM64_EMULATED_BINARIES = new Set([
+  "qdrant-win32-arm64.exe", // Qdrant has no Windows aarch64 release
+  "nircmd.exe", // NirSoft ships x86/x64 only
+  "ffmpeg.exe", // ffmpeg-static has no win32-arm64 binary
+  "fastlist-0.3.0-x64.exe", // ps-list's process lister (processListCache runs the x64 one)
+  "fastlist-0.3.0-x86.exe",
+  "elevate.exe", // electron-builder's x86 elevation helper for per-machine installs
+]);
+
+// Machine field of a PE image, or null for anything that is not one
+function readPeMachine(filePath) {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const dos = Buffer.alloc(64);
+    if (fs.readSync(fd, dos, 0, 64, 0) < 64 || dos.readUInt16LE(0) !== 0x5a4d) return null;
+    const header = Buffer.alloc(6);
+    if (fs.readSync(fd, header, 0, 6, dos.readUInt32LE(0x3c)) < 6) return null;
+    return header.readUInt32LE(0) === 0x00004550 ? header.readUInt16LE(4) : null;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Every .exe, .dll and .node under rootDir built for another machine than
+// expected, except the allowed file names
+function findForeignArchBinaries(rootDir, expectedMachine, allowedNames = new Set()) {
+  return collectFiles(rootDir)
+    .filter((file) => /\.(exe|dll|node)$/i.test(file))
+    .filter((file) => !allowedNames.has(path.basename(file).toLowerCase()))
+    .map((file) => ({ file, machine: readPeMachine(file) }))
+    .filter(({ machine }) => machine !== null && machine !== expectedMachine);
+}
+
+// A Windows on Arm build must not carry x64 code by accident: a stale helper
+// restored from a shared cache, a download that fell back to the x64 asset, or
+// VS's arm64-folder vcruntime140_1.dll (ARM64EC, PE header x64). Windows
+// would run most of them emulated, so nothing else would notice.
+function verifyWindowsArm64Binaries(context) {
+  if (context.electronPlatformName !== "win32" || Arch[context.arch] !== "arm64") return;
+  const foreign = findForeignArchBinaries(
+    context.appOutDir,
+    PE_MACHINE_ARM64,
+    WINDOWS_ARM64_EMULATED_BINARIES
+  );
+  if (foreign.length > 0) {
+    const list = foreign
+      .map(
+        ({ file, machine }) =>
+          `${path.relative(context.appOutDir, file)} (0x${machine.toString(16)})`
+      )
+      .join(", ");
+    throw new Error(
+      `afterPack: non-ARM64 binaries in the arm64 build: ${list} — rebuild or re-download them for arm64, or add a deliberately emulated binary to WINDOWS_ARM64_EMULATED_BINARIES`
+    );
+  }
+  console.log("  afterPack: verified every Windows binary in the arm64 build is ARM64");
+}
+
 function verifyUnpackedBinaries(context) {
   const unpackedDir = path.join(resolveResourcesDir(context), "app.asar.unpacked");
   const unpackedModulesDir = path.join(unpackedDir, "node_modules");
@@ -352,8 +415,12 @@ exports.default = async function (context) {
   verifyMeetingAecHelper(context);
   verifyWhisperNpuRuntime(context);
   verifyUnpackedBinaries(context);
+  verifyWindowsArm64Binaries(context);
   registerMacResourceBinariesForSigning(context);
 };
 
 exports.verifyWindowsOnnxRuntimePrivatized = verifyWindowsOnnxRuntimePrivatized;
 exports.verifyWindowsKeyListener = verifyWindowsKeyListener;
+exports.verifyWindowsArm64Binaries = verifyWindowsArm64Binaries;
+exports.findForeignArchBinaries = findForeignArchBinaries;
+exports.readPeMachine = readPeMachine;

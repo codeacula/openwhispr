@@ -3,7 +3,7 @@
 // drives it exactly like whisper-server (src/helpers/whisperServer.js).
 //
 //   GET  /           health check, answers once the model is loaded
-//   POST /inference  multipart: file (16 kHz mono PCM16 WAV), language,
+//   POST /inference  multipart: file (16 kHz mono PCM16 WAV), language, prompt,
 //                    logprob_thold, no_speech_thold -> {"text", "language"}
 //
 // Arguments whisper-server takes but this server has no use for (--threads,
@@ -11,13 +11,21 @@
 //
 // `whisper-npu-server --probe` lists the NPU devices the QNN provider sees as
 // JSON and exits 0 when there is one, 2 when there is none.
+//
+// `whisper-npu-server --tokenize <tokenizer.json>` prints the token ids of the
+// UTF-8 text on stdin as JSON, for checking the encoder against Hugging Face.
 
 #include "httplib.h"
 
 #include <windows.h>
 
+#include <fcntl.h>
+#include <io.h>
+
 #include <chrono>
 #include <cstdio>
+#include <iostream>
+#include <iterator>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -25,6 +33,7 @@
 #include "json.hpp"
 #include "ort_runtime.h"
 #include "text_util.h"
+#include "vocab.h"
 #include "wav.h"
 #include "whisper_npu.h"
 
@@ -44,6 +53,7 @@ struct Args {
   int port = 8080;
   std::string language = "auto";
   bool probe = false;
+  std::filesystem::path tokenizer;  // --tokenize
 };
 
 std::string wideToUtf8(const wchar_t* text) {
@@ -59,6 +69,8 @@ bool parseArgs(int argc, wchar_t** argv, Args& args) {
     const bool hasValue = i + 1 < argc && std::wstring(argv[i + 1]).rfind(L"--", 0) != 0;
     if (flag == "--probe") {
       args.probe = true;
+    } else if (flag == "--tokenize" && hasValue) {
+      args.tokenizer = argv[++i];
     } else if ((flag == "--model" || flag == "-m") && hasValue) {
       args.model = argv[++i];
     } else if (flag == "--host" && hasValue) {
@@ -71,7 +83,7 @@ bool parseArgs(int argc, wchar_t** argv, Args& args) {
       ++i;  // a whisper-server option this server ignores, with its value
     }
   }
-  return args.probe || !args.model.empty();
+  return args.probe || !args.model.empty() || !args.tokenizer.empty();
 }
 
 std::filesystem::path executableDir() {
@@ -124,6 +136,14 @@ int probe(whisper_npu::OrtRuntime& runtime) {
   return npu ? 0 : kExitNoNpu;
 }
 
+int tokenize(const std::filesystem::path& tokenizerJson) {
+  std::cin.sync_with_stdio(false);
+  std::string text((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
+  const whisper_npu::Vocab vocab(tokenizerJson);
+  std::printf("%s\n", toJson(vocab.encode(text)).c_str());
+  return 0;
+}
+
 std::string formValue(const httplib::Request& req, const char* name, const std::string& fallback) {
   return req.has_file(name) ? req.get_file_value(name).content : fallback;
 }
@@ -156,6 +176,16 @@ int wmain(int argc, wchar_t** argv) {
     return kExitUsage;
   }
 
+  if (!args.tokenizer.empty()) {
+    try {
+      _setmode(_fileno(stdin), _O_BINARY);
+      return tokenize(args.tokenizer);
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "whisper-npu-server: %s\n", e.what());
+      return kExitModel;
+    }
+  }
+
   std::unique_ptr<whisper_npu::OrtRuntime> runtime;
   try {
     runtime = std::make_unique<whisper_npu::OrtRuntime>(executableDir());
@@ -178,7 +208,6 @@ int wmain(int argc, wchar_t** argv) {
   }
 
   std::mutex inferenceLock;
-  bool promptWarned = false;
   httplib::Server server;
 
   server.Get("/", [](const httplib::Request&, httplib::Response& res) {
@@ -197,14 +226,11 @@ int wmain(int argc, wchar_t** argv) {
 
     whisper_npu::TranscribeOptions options;
     options.language = formValue(req, "language", args.language);
+    options.prompt = formValue(req, "prompt", "");
     options.logprobThreshold = formFloat(req, "logprob_thold", options.logprobThreshold);
     options.noSpeechThreshold = formFloat(req, "no_speech_thold", options.noSpeechThreshold);
 
     std::lock_guard<std::mutex> guard(inferenceLock);
-    if (!promptWarned && !formValue(req, "prompt", "").empty()) {
-      std::fprintf(stderr, "whisper-npu-server: initial prompts are not supported yet; ignored\n");
-      promptWarned = true;
-    }
     try {
       const auto start = std::chrono::steady_clock::now();
       const auto result = model->transcribe(samples, options);
@@ -212,10 +238,11 @@ int wmain(int argc, wchar_t** argv) {
           std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
       std::fprintf(stderr,
                    "whisper-npu-server: %.1fs of audio in %.2fs (encoder %.2fs, decoder %.2fs, "
-                   "%d steps, %d window(s), language %s)\n",
+                   "%d steps, %d window(s), language %s, %d prompt tokens, %d prompt retries)\n",
                    samples.size() / static_cast<double>(whisper_npu::kSampleRate), elapsed,
                    result.stats.encoderSeconds, result.stats.decoderSeconds,
-                   result.stats.decoderSteps, result.stats.windows, result.language.c_str());
+                   result.stats.decoderSteps, result.stats.windows, result.language.c_str(),
+                   result.stats.promptTokens, result.stats.promptRetries);
       res.set_content(toJson({{"text", result.text}, {"language", result.language}}),
                       "application/json");
     } catch (const std::exception& e) {

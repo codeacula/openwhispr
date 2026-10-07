@@ -149,7 +149,24 @@ jobs:
 
   build-windows:
     needs: tests
-    runs-on: windows-latest
+    name: build-windows (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            os: windows-latest
+            builder-args: ""
+          # Built natively: cross-building on x64 can't run the helpers' self-checks
+          # and npm would install only x64 optional packages (@napi-rs/keyring).
+          # latest-arm64.yml sits beside x64's latest.yml (src/updater.js picks the
+          # channel), and a non-universal installer gets an -arm64 file name.
+          - arch: arm64
+            os: windows-11-arm
+            builder-args: "--arm64 -c.publish.channel=latest-arm64 -c.nsis.buildUniversalInstaller=false"
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
 
@@ -161,20 +178,43 @@ jobs:
 
       - name: Setup MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          # vcvarsall builds x64 by default, even on the arm64 runner
+          arch: ${{ matrix.arch }}
 
       - name: Install dependencies
         run: npm ci
+        env:
+          # ffmpeg-static has no win32-arm64 binary and its install script fails
+          # npm ci there; given an existing file in FFMPEG_BIN it exits early.
+          # The x64 ffmpeg is installed in the next step.
+          FFMPEG_BIN: ${{ matrix.arch == 'arm64' && format('{0}\package.json', github.workspace) || '' }}
+
+      - name: Install x64 ffmpeg (runs under Windows on Arm's x64 emulation)
+        if: matrix.arch == 'arm64'
+        shell: bash
+        run: npm_config_arch=x64 node node_modules/ffmpeg-static/install.js
 
       - name: Install platform-specific native binaries
+        if: matrix.arch == 'x64'
         run: npm install @rollup/rollup-win32-x64-msvc lightningcss-win32-x64-msvc @tailwindcss/oxide-win32-x64-msvc --no-save
 
       - name: Cache native binaries
         uses: actions/cache@v4
         with:
           path: resources/bin
-          # Native helper sources are in the key so source changes cannot
-          # restore stale helper binaries from the cache.
-          key: windows-x64-bin-${{ hashFiles('scripts/download-*.js', 'resources/windows-system-audio-helper.c', 'resources/windows-mic-listener.c') }}
+          # Per arch, or one arch would restore the other's helpers. Native
+          # helper sources are in the key so source changes cannot restore
+          # stale helper binaries from the cache.
+          key: windows-${{ matrix.arch }}-bin-${{ hashFiles('scripts/download-*.js', 'scripts/build-windows-*.js', 'scripts/build-meeting-aec-helper.js', 'scripts/lib/meeting-aec-build.js', 'resources/windows-*.c', 'native/meeting-aec-helper/**') }}
+
+      - name: Cache NPU runtime packages
+        if: matrix.arch == 'arm64'
+        uses: actions/cache@v4
+        with:
+          # ~300 MB of NuGet packages compile:npu-server fetches and sha256-checks
+          path: native/whisper-npu-server/third_party
+          key: windows-arm64-npu-deps-${{ hashFiles('scripts/build-whisper-npu-server.js') }}
 
       - name: Download whisper.cpp binaries
         run: node scripts/download-whisper-cpp.js --current
@@ -204,6 +244,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 
+      - name: Build meeting AEC helper when no prebuilt exists
+        # Likewise for build-meeting-aec-helper.yml's per-arch zip
+        shell: bash
+        run: test -f "resources/bin/meeting-aec-helper-win32-${{ matrix.arch }}.exe" || node scripts/build-meeting-aec-helper.js --arch ${{ matrix.arch }}
+
       - name: Download nircmd.exe
         run: node scripts/download-nircmd.js
         env:
@@ -225,6 +270,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 
+      - name: Compile windows-system-audio-helper.exe when no prebuilt exists
+        # build-windows-system-audio-helper.yml publishes it per arch; a release
+        # that lacks this arch's zip builds the same source here
+        shell: cmd
+        run: if not exist resources\bin\windows-system-audio-helper.exe cl /O2 /nologo resources\windows-system-audio-helper.c /Fe:resources\bin\windows-system-audio-helper.exe ole32.lib mmdevapi.lib
+
       - name: Verify windows-system-audio-helper.exe
         shell: bash
         run: test -f resources/bin/windows-system-audio-helper.exe
@@ -233,8 +284,22 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/AppData/Local/electron/Cache
-          key: windows-electron-${{ hashFiles('package-lock.json') }}
-          restore-keys: windows-electron-
+          key: windows-${{ matrix.arch }}-electron-${{ hashFiles('package-lock.json') }}
+          restore-keys: windows-${{ matrix.arch }}-electron-
+
+      - name: Install x64 .NET 8 runtime for Azure Trusted Signing
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          # electron-builder signs through the TrustedSigning module, whose
+          # signtool and Azure.CodeSigning dlib are x64-only and need the x64
+          # .NET 8 runtime; the arm64 image ships arm64 .NET only.
+          # DOTNET_ROOT_X64 points x64 processes at a side-by-side copy.
+          $dir = Join-Path $env:RUNNER_TEMP "dotnet-x64"
+          $script = Join-Path $env:RUNNER_TEMP "dotnet-install.ps1"
+          Invoke-WebRequest -Uri https://dot.net/v1/dotnet-install.ps1 -OutFile $script
+          & $script -Runtime dotnet -Channel 8.0 -Architecture x64 -InstallDir $dir
+          "DOTNET_ROOT_X64=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Create runtime env
         shell: bash
@@ -248,7 +313,10 @@ jobs:
           echo "GITHUB_APP_SLUG=${{ secrets.GH_APP_SLUG }}" >> .env
 
       - name: Build and Sign Application
-        run: npm run build:win -- --publish always
+        # bash, not the default pwsh: pwsh splits a native argument like
+        # -c.publish.channel=x at its first dot
+        shell: bash
+        run: npm run build:win -- --publish always ${{ matrix.builder-args }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           BRAND_FONTS_REQUIRED: "1"
@@ -258,6 +326,20 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Verify update metadata
+        shell: bash
+        run: |
+          # Each arch has its own update feed: x64 reads latest.yml, arm64
+          # latest-arm64.yml (src/updater.js)
+          if [ "${{ matrix.arch }}" = arm64 ]; then
+            test -f dist/latest-arm64.yml
+            test ! -e dist/latest.yml
+            grep -q -- '-arm64\.exe' dist/latest-arm64.yml
+          else
+            test -f dist/latest.yml
+            test ! -e dist/latest-arm64.yml
+          fi
 
   build-macos:
     needs: tests

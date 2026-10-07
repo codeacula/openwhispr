@@ -296,10 +296,17 @@ for root_label in ROOT_LABELS:
 print(json.dumps({"regular": sorted(collected), "avx2": sorted(avx2)}))
 `;
 
-  const output = execFileSync("python3", ["-c", pythonScript], {
-    encoding: "utf8",
-  });
-  return JSON.parse(output);
+  // Windows Python installs often provide only `python`, and `python3` there
+  // can be the Microsoft Store stub, which exists but fails: try both
+  let firstError = null;
+  for (const python of ["python3", "python"]) {
+    try {
+      return JSON.parse(execFileSync(python, ["-c", pythonScript], { encoding: "utf8" }));
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+  throw firstError;
 }
 
 function getPlatformDefines(targetPlatform, targetArch) {

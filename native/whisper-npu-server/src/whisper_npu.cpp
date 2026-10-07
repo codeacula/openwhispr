@@ -18,6 +18,8 @@ namespace {
 constexpr float kMaskBlocked = -100.0f;
 // Shortest tail worth decoding once the audio has been split into windows
 constexpr size_t kMinWindowSamples = kSampleRate / 10;
+// Most cache slots a prompt may take; a third of the cache at most
+constexpr int kMaxPromptTokens = 64;
 // Long audio is cut at the quietest 20 ms in the last 5 s of each window
 constexpr size_t kSplitSearchSamples = 5 * kSampleRate;
 constexpr size_t kSplitFrameSamples = kSampleRate / 50;
@@ -252,50 +254,68 @@ const std::vector<float>& WhisperNpu::step(int position, int token) {
   return logits_;
 }
 
-WhisperNpu::Window WhisperNpu::decodeWindow(const float* samples, size_t count,
-                                            const std::string& language, TranscribeStats& stats,
+void WhisperNpu::encodeWindow(const float* samples, size_t count, TranscribeStats& stats) {
+  const auto start = Clock::now();
+  runEncoder(samples, count);
+  stats.encoderSeconds += secondsSince(start);
+  stats.windows++;
+}
+
+std::string WhisperNpu::pickLanguage(const std::vector<float>& scores) const {
+  int best = -1;
+  for (const auto& [code, id] : vocab_.languages()) {
+    if (id < static_cast<int>(scores.size()) && (best < 0 || scores[id] > scores[best])) best = id;
+  }
+  return vocab_.languageCode(best);
+}
+
+WhisperNpu::Window WhisperNpu::decodeWindow(const std::string& language,
+                                            const std::vector<int>& prompt,
+                                            TranscribeStats& stats,
                                             const TranscribeOptions& options) {
   Window window;
-  const auto encodeStart = Clock::now();
-  runEncoder(samples, count);
-  resetDecoder();
-  stats.encoderSeconds += secondsSince(encodeStart);
-  stats.windows++;
-
   const auto decodeStart = Clock::now();
-  int position = 0;
-  std::vector<float> scores = step(position++, vocab_.startOfTranscript());
-  stats.decoderSteps++;
-
-  // The logits after <|startoftranscript|> carry both language detection and
-  // Whisper's no-speech probability.
-  float noSpeechProb = 0.0f;
-  if (vocab_.noSpeech() >= 0 && vocab_.noSpeech() < static_cast<int>(scores.size())) {
-    noSpeechProb = std::exp(scores[vocab_.noSpeech()] - logSumExp(scores));
-  }
-
-  std::vector<int> prompt;
+  const int startOfTranscript = vocab_.startOfTranscript();
   const auto& languages = vocab_.languages();
-  if (languages.empty()) {
-    window.language = "en";  // English-only model: no language or task tokens
-  } else {
-    auto chosen = languages.find(language);
-    if (chosen == languages.end()) {
-      int best = -1;
-      for (const auto& [code, id] : languages) {
-        if (id < static_cast<int>(scores.size()) && (best < 0 || scores[id] > scores[best])) best = id;
-      }
-      chosen = languages.find(vocab_.languageCode(best));
-    }
-    window.language = chosen->first;
-    prompt.push_back(chosen->second);
-    prompt.push_back(vocab_.transcribe());
-  }
-  prompt.push_back(vocab_.noTimestamps());
-  for (int token : prompt) {
+  int position = 0;
+  std::vector<float> scores;
+  float noSpeechProb = 0.0f;
+  auto feed = [&](int token) {
     scores = step(position++, token);
     stats.decoderSteps++;
+    // The logits after <|startoftranscript|> carry Whisper's no-speech probability
+    if (token == startOfTranscript && vocab_.noSpeech() >= 0 &&
+        vocab_.noSpeech() < static_cast<int>(scores.size())) {
+      noSpeechProb = std::exp(scores[vocab_.noSpeech()] - logSumExp(scores));
+    }
+  };
+
+  // Whisper detects the language from <|startoftranscript|> alone, so a
+  // prompt in another language cannot sway it; without a prompt that is the
+  // first step of the decode itself
+  std::string chosen = languages.empty() ? "en" : language;
+  const bool detect = !languages.empty() && !languages.count(chosen);
+  if (detect && !prompt.empty()) {
+    resetDecoder();
+    feed(startOfTranscript);
+    chosen = pickLanguage(scores);
+    position = 0;
   }
+
+  // [<|startofprev|> prompt...] <|startoftranscript|> [<|lang|> <|transcribe|>] <|notimestamps|>
+  resetDecoder();
+  if (!prompt.empty()) {
+    feed(vocab_.startOfPrev());
+    for (int token : prompt) feed(token);
+  }
+  feed(startOfTranscript);
+  if (detect && prompt.empty()) chosen = pickLanguage(scores);
+  window.language = chosen;
+  if (!languages.empty()) {
+    feed(languages.at(chosen));
+    feed(vocab_.transcribe());
+  }
+  feed(vocab_.noTimestamps());
 
   const int endOfText = vocab_.endOfText();
   const int blank = vocab_.id("\xC4\xA0");  // byte-level " "
@@ -310,13 +330,17 @@ WhisperNpu::Window WhisperNpu::decodeWindow(const float* samples, size_t count,
       scores[endOfText] = -std::numeric_limits<float>::infinity();
       if (blank >= 0) scores[blank] = -std::numeric_limits<float>::infinity();
     }
-    const int next = static_cast<int>(std::max_element(scores.begin(), scores.end()) - scores.begin());
+    const int next =
+        static_cast<int>(std::max_element(scores.begin(), scores.end()) - scores.begin());
     sumLogprob += scores[next] - logSumExp(scores);
     if (next == endOfText) break;
     window.tokens.push_back(next);
-    if (trimRepetition(window.tokens) || position >= maskLength_ - 1) break;
-    scores = step(position++, next);
-    stats.decoderSteps++;
+    if (trimRepetition(window.tokens)) break;
+    if (position >= maskLength_ - 1) {
+      window.ranOutOfCache = true;
+      break;
+    }
+    feed(next);
   }
   stats.decoderSeconds += secondsSince(decodeStart);
 
@@ -327,15 +351,38 @@ WhisperNpu::Window WhisperNpu::decodeWindow(const float* samples, size_t count,
   return window;
 }
 
+std::vector<int> WhisperNpu::promptTokens(const std::string& prompt) const {
+  const auto first = prompt.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos || vocab_.startOfPrev() < 0) return {};
+  const auto last = prompt.find_last_not_of(" \t\r\n");
+  // Encoded as given, as whisper.cpp does (OpenAI's Python Whisper adds a
+  // leading space), so the NPU reads the dictionary the way the CPU path does
+  std::vector<int> tokens = vocab_.encode(prompt.substr(first, last - first + 1));
+  // Every prompt token is a self-attention cache slot the transcript cannot
+  // use; keep the end, as Whisper does when a prompt is too long
+  const size_t limit = static_cast<size_t>(std::min(kMaxPromptTokens, (maskLength_ - 1) / 3));
+  if (tokens.size() > limit) tokens.erase(tokens.begin(), tokens.end() - limit);
+  return tokens;
+}
+
 TranscribeResult WhisperNpu::transcribe(const std::vector<float>& samples,
                                         const TranscribeOptions& options) {
   TranscribeResult result;
+  const std::vector<int> prompt = promptTokens(options.prompt);
+  result.stats.promptTokens = static_cast<int>(prompt.size());
   std::string language = options.language;
   for (size_t start = 0; start < samples.size();) {
     const size_t remaining = samples.size() - start;
     const size_t length = remaining > kWindowSamples ? quietestSplit(samples, start) : remaining;
     if (length >= kMinWindowSamples || start == 0) {
-      Window window = decodeWindow(samples.data() + start, length, language, result.stats, options);
+      encodeWindow(samples.data() + start, length, result.stats);
+      Window window = decodeWindow(language, prompt, result.stats, options);
+      // The prompt took cache slots the transcript needed: decode the window
+      // again without it rather than lose its last words
+      if (window.ranOutOfCache && !prompt.empty()) {
+        result.stats.promptRetries++;
+        window = decodeWindow(language, {}, result.stats, options);
+      }
       // Later windows keep the language detected in the first one
       if (result.language.empty()) {
         result.language = window.language;

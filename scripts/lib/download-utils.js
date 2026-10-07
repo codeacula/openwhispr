@@ -1,7 +1,7 @@
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
-const { execSync } = require("child_process");
+const { execFileSync, execSync } = require("child_process");
 
 const REQUEST_TIMEOUT = 30000;
 const MAX_RETRIES = 3;
@@ -323,7 +323,13 @@ async function extractZip(zipPath, destDir) {
 }
 
 function extractTarGz(tarPath, destDir) {
-  execSync(`tar -xzf "${tarPath}" -C "${destDir}"`, { stdio: "inherit" });
+  // Relative paths: under Git Bash on Windows `tar` is GNU tar, which reads the
+  // C: of an absolute path as a remote host (as in download-sherpa-onnx.js)
+  const cwd = path.dirname(tarPath);
+  execFileSync("tar", ["-xzf", path.basename(tarPath), "-C", path.relative(cwd, destDir) || "."], {
+    stdio: "inherit",
+    cwd,
+  });
 }
 
 async function extractArchive(archivePath, destDir) {
