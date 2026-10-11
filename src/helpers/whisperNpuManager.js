@@ -32,6 +32,7 @@ const INSTALL_MARKER = ".installed.json";
 const PROBE_TIMEOUT_MS = 20000;
 // The zip and its extracted copy coexist until the install finishes
 const DISK_SPACE_FACTOR = 2.2;
+const DOWNLOAD_STOP_TIMEOUT_MS = 30000;
 
 // Snapdragon X Elite/Plus (X1E, X1P) carry a v73 Hexagon NPU, Snapdragon X2
 // a v81. AI Hub compiles each model per NPU generation.
@@ -43,7 +44,9 @@ function resolveHtpArch(cpuModel) {
 }
 
 function getNpuModelConfig(modelName) {
-  return modelRegistryData.whisperNpuModels?.[modelName] || null;
+  const models = modelRegistryData.whisperNpuModels || {};
+  // Own keys only: "constructor" and friends are not model names
+  return Object.hasOwn(models, modelName) ? models[modelName] : null;
 }
 
 function sha256File(filePath) {
@@ -131,6 +134,11 @@ class WhisperNpuManager {
   // NPU builds exist for this model on this machine's NPU generation
   hasModel(modelName) {
     return !!(this.htpArch && getNpuModelConfig(modelName)?.assets?.[this.htpArch]);
+  }
+
+  // The registry has NPU builds of this model, for some NPU generation
+  isNpuModel(modelName) {
+    return !!getNpuModelConfig(modelName);
   }
 
   getModelDir(modelName) {
@@ -274,11 +282,34 @@ class WhisperNpuManager {
     return { success: true };
   }
 
+  // A cancelled download keeps going until its current step ends (extracting a
+  // 2 GB archive is one step), and an install that finishes after its folder
+  // was deleted would bring the model back. Wait for it to wind down first.
+  async _stopDownload(modelName = null) {
+    const download = this.currentDownload;
+    if (!download || (modelName && download.model !== modelName)) return;
+    download.abort();
+    const deadline = Date.now() + DOWNLOAD_STOP_TIMEOUT_MS;
+    while (this.currentDownload === download && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
   async deleteModel(modelName) {
     const dir = this.getModelDir(modelName);
+    await this._stopDownload(modelName);
     const existed = fs.existsSync(dir);
     await fsPromises.rm(dir, { recursive: true, force: true });
     return { success: true, deleted: existed, model: modelName };
+  }
+
+  // Every NPU build, for Remove downloaded models and Reset app data
+  async deleteAllModels() {
+    await this._stopDownload();
+    const dir = this.getModelsDir();
+    const existed = fs.existsSync(dir);
+    await fsPromises.rm(dir, { recursive: true, force: true });
+    return { success: true, deleted: existed };
   }
 }
 

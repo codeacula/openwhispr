@@ -80,11 +80,13 @@ float logSumExp(const std::vector<float>& scores) {
 
 // Greedy decoding can lock into a loop ("the the the ..."). When the tail is
 // one block repeated, keep a single copy and report it so decoding stops.
+// Spans are not monotonic (period 3 needs 15 tokens, period 4 only 12), so a
+// period that does not fit yet must not stop the longer ones being checked.
 bool trimRepetition(std::vector<int>& tokens) {
   for (size_t period = 1; period <= 32; ++period) {
     const size_t repeats = period == 1 ? 10 : period < 4 ? 5 : 3;
     const size_t span = period * repeats;
-    if (tokens.size() < span) break;
+    if (tokens.size() < span) continue;
     const size_t start = tokens.size() - span;
     bool periodic = true;
     for (size_t i = start + period; i < tokens.size() && periodic; ++i) {

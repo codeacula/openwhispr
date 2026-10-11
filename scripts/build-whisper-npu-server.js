@@ -12,9 +12,10 @@
  *
  * Windows on Arm only; exits quietly anywhere else.
  *
- *   node scripts/build-whisper-npu-server.js [--force] [--zip]
+ *   node scripts/build-whisper-npu-server.js [--force]
  *
- * --zip also writes whisper-npu-server-win32-arm64.zip for a release.
+ * There is deliberately no zip of the pack: Qualcomm's license allows the QNN
+ * libraries to ship only inside the app, never as a standalone download.
  */
 
 const crypto = require("crypto");
@@ -210,15 +211,6 @@ function stagePack(builtExe) {
   }
 }
 
-function zipPack() {
-  const zipPath = path.join(buildDir, "whisper-npu-server-win32-arm64.zip");
-  fs.rmSync(zipPath, { force: true });
-  // Windows' bundled bsdtar writes zip archives with -a
-  const result = run("tar", ["-a", "-c", "-f", zipPath, "-C", packDir, "."]);
-  if (result.status !== 0) throw new Error("Failed to zip the pack");
-  log(`Wrote ${path.relative(projectRoot, zipPath)}`);
-}
-
 async function main() {
   const force = process.argv.includes("--force");
   const currentHash = sourceHash();
@@ -230,7 +222,6 @@ async function main() {
     fs.existsSync(path.join(packDir, "whisper-npu-server.exe"))
   ) {
     log("Pack is up to date, skipping build");
-    if (process.argv.includes("--zip")) zipPack();
     return;
   }
 
@@ -253,7 +244,6 @@ async function main() {
   stagePack(builtExe);
   fs.writeFileSync(hashFile, currentHash);
   log(`Staged ${path.relative(projectRoot, packDir)}`);
-  if (process.argv.includes("--zip")) zipPack();
 }
 
 main().catch((error) => {

@@ -24,6 +24,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <iterator>
 #include <filesystem>
@@ -246,8 +247,14 @@ int wmain(int argc, wchar_t** argv) {
       res.set_content(toJson({{"text", result.text}, {"language", result.language}}),
                       "application/json");
     } catch (const std::exception& e) {
+      // Bad input was answered with 400 above, so this is the NPU failing (a
+      // QNN graph that no longer runs, out of memory). Exit without replying:
+      // the app treats a server that drops the request and dies like a crashed
+      // GPU server, records this line as the reason and retries on the CPU.
+      // A 500 from a server that stays up would fail every later request too.
       std::fprintf(stderr, "whisper-npu-server: transcription failed: %s\n", e.what());
-      replyError(res, 500, e.what());
+      std::fflush(stderr);
+      std::_Exit(kExitRuntime);
     }
   });
 

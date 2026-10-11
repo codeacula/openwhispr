@@ -27,29 +27,54 @@ function formatSize(bytes: number): string {
 export default function WhisperNpuCard({ model, cpuModelDownloaded }: WhisperNpuCardProps) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<NpuWhisperStatus | null>(null);
-  const [downloading, setDownloading] = useState(false);
+  // The model whose NPU download is running, by this card or before it mounted
+  const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState<DownloadProgress>(EMPTY_PROGRESS);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
+  // The last failed download, kept with its model so it still shows after the
+  // user looks at another model and comes back
+  const [downloadError, setDownloadError] = useState<{ model: string; message: string } | null>(
+    null
+  );
   const [dismissed, setDismissed] = useState(false);
   // A server reload onto the NPU is in flight
   const [activating, setActivating] = useState(false);
   // Live truth from the running server, never inferred from a download
   const [active, setActive] = useState(false);
   const cancelledRef = useRef(false);
+  // The model this card's own download call is waiting on
+  const pendingModelRef = useRef<string | null>(null);
+  const modelRef = useRef(model);
+
+  useEffect(() => {
+    modelRef.current = model;
+  }, [model]);
 
   const readStatus = useCallback(async () => {
     try {
       const next = await window.electronAPI?.getNpuWhisperStatus?.(model);
+      // A reply for a model that is no longer selected (the last read of a
+      // download that outlived a model switch) must not describe this one
+      if (model !== modelRef.current) return;
       setStatus(next ?? null);
-      if (next?.downloading) setDownloading(true);
+      if (next?.downloading) {
+        setDownloadingModel(model);
+        if (pendingModelRef.current !== model) {
+          setProgress((current) => ({
+            ...current,
+            percentage: next.downloadProgress ?? current.percentage,
+          }));
+        }
+      } else if (pendingModelRef.current !== model) {
+        // A download this card did not start has no call here to report its end
+        setDownloadingModel((current) => (current === model ? null : current));
+      }
     } catch {
-      setStatus(null);
+      if (model === modelRef.current) setStatus(null);
     }
   }, [model]);
 
   useEffect(() => {
-    setDownloadError(null);
     readStatus();
     return window.electronAPI?.onWhisperGpuStatusChanged?.(readStatus);
   }, [readStatus]);
@@ -61,6 +86,8 @@ export default function WhisperNpuCard({ model, cpuModelDownloaded }: WhisperNpu
       readStatus();
     });
   }, [readStatus]);
+
+  const downloading = downloadingModel === model;
 
   useEffect(() => {
     if (!downloading) return;
@@ -74,6 +101,16 @@ export default function WhisperNpuCard({ model, cpuModelDownloaded }: WhisperNpu
       });
     });
   }, [downloading, model]);
+
+  // A download that was running before this card mounted (Settings reopened,
+  // or another picker started it) reports progress and its end only through
+  // the status, and a failure or cancel broadcasts nothing: poll it. See the
+  // GPU card's gpuResumedDownload.
+  useEffect(() => {
+    if (!downloading || pendingModelRef.current === model) return;
+    const id = setInterval(readStatus, 1000);
+    return () => clearInterval(id);
+  }, [downloading, model, readStatus]);
 
   useEffect(() => {
     if (!status?.downloaded) return;
@@ -100,20 +137,25 @@ export default function WhisperNpuCard({ model, cpuModelDownloaded }: WhisperNpu
   }, [activating]);
 
   const handleDownload = async () => {
+    const downloadModel = model;
     cancelledRef.current = false;
+    pendingModelRef.current = downloadModel;
     setDownloadError(null);
     setProgress(EMPTY_PROGRESS);
     setInstalling(false);
-    setDownloading(true);
+    setDownloadingModel(downloadModel);
     try {
-      const result = await window.electronAPI?.downloadNpuWhisperModel?.(model);
-      if (result?.success) {
+      const result = await window.electronAPI?.downloadNpuWhisperModel?.(downloadModel);
+      if (result && !result.success && !cancelledRef.current) {
+        setDownloadError({ model: downloadModel, message: result.error ?? "" });
+      } else if (result?.success && downloadModel === modelRef.current) {
+        // The server reload belongs to the model that was downloaded; another
+        // model on screen meanwhile is not activating
         setActivating(!!result.willRestart);
-      } else if (result && !cancelledRef.current) {
-        setDownloadError(result.error ?? "");
       }
     } finally {
-      setDownloading(false);
+      if (pendingModelRef.current === downloadModel) pendingModelRef.current = null;
+      setDownloadingModel((current) => (current === downloadModel ? null : current));
       setInstalling(false);
       readStatus();
     }
@@ -260,10 +302,10 @@ export default function WhisperNpuCard({ model, cpuModelDownloaded }: WhisperNpu
           </div>
         </div>
       )}
-      {!status.downloaded && downloadError !== null && (
+      {!status.downloaded && downloadError?.model === model && (
         <p className="mt-2 text-xs leading-snug text-destructive">
           {t("npu.downloadFailed")}
-          {downloadError && ` ${downloadError}`}
+          {downloadError.message && ` ${downloadError.message}`}
         </p>
       )}
     </div>

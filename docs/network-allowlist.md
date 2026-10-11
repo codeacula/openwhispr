@@ -33,11 +33,12 @@ Allowlist all four unless a specific provider is pinned in configuration.
 Contacted only when a user opts into a local model (Whisper, Parakeet, or a
 local GGUF reasoning model). Not required for cloud-only installs.
 
-| Host                                                    | Protocol | Port | Purpose                                                                     |
-| ------------------------------------------------------- | -------- | ---- | --------------------------------------------------------------------------- |
-| `huggingface.co`                                        | HTTPS    | 443  | Whisper GGML, Parakeet, GGUF, and embedding model downloads.                |
-| `cdn-lfs.huggingface.co`, `cdn-lfs-us-1.huggingface.co` | HTTPS    | 443  | HuggingFace large-file CDN (LFS-backed model files).                        |
-| `github.com`, `objects.githubusercontent.com`           | HTTPS    | 443  | sherpa-onnx, llama.cpp, whisper.cpp, and Qdrant binaries (GitHub releases). |
+| Host                                                    | Protocol | Port | Purpose                                                                                                      |
+| ------------------------------------------------------- | -------- | ---- | ------------------------------------------------------------------------------------------------------------ |
+| `huggingface.co`                                        | HTTPS    | 443  | Whisper GGML, Parakeet, GGUF, and embedding model downloads.                                                 |
+| `cdn-lfs.huggingface.co`, `cdn-lfs-us-1.huggingface.co` | HTTPS    | 443  | HuggingFace large-file CDN (LFS-backed model files).                                                         |
+| `github.com`, `objects.githubusercontent.com`           | HTTPS    | 443  | sherpa-onnx, llama.cpp, whisper.cpp, and Qdrant binaries (GitHub releases).                                  |
+| `qaihub-public-assets.s3.us-west-2.amazonaws.com`       | HTTPS    | 443  | Whisper NPU model downloads (Qualcomm AI Hub builds; Windows on Arm with a Snapdragon X only, when enabled). |
 
 ## Required for Google Calendar (optional feature)
 

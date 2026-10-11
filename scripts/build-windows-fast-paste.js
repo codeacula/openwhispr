@@ -13,6 +13,7 @@
 const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { isBuiltForArch, createWrongArchFallback } = require("./lib/pe-machine");
 
 const isWindows = process.platform === "win32";
 if (!isWindows) {
@@ -23,11 +24,15 @@ if (!isWindows) {
 const projectRoot = path.resolve(__dirname, "..");
 const cSource = path.join(projectRoot, "resources", "windows-fast-paste.c");
 const outputDir = path.join(projectRoot, "resources", "bin");
+// TARGET_ARCH is set per leg by the Windows CI matrix
+const targetArch = process.env.TARGET_ARCH || process.arch;
 const outputBinary = path.join(outputDir, "windows-fast-paste.exe");
 
 function log(message) {
   console.log(`[windows-fast-paste] ${message}`);
 }
+
+const wrongArch = createWrongArchFallback(outputBinary, targetArch, log);
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -47,10 +52,16 @@ function isBinaryUpToDate() {
   try {
     const binaryStat = fs.statSync(outputBinary);
     const sourceStat = fs.statSync(cSource);
-    return binaryStat.mtimeMs >= sourceStat.mtimeMs && supportsSelectionCopy(outputBinary);
+    return binaryStat.mtimeMs >= sourceStat.mtimeMs && isUsableBinary(outputBinary);
   } catch {
     return false;
   }
+}
+
+// Built for the target arch (the capability probe below also passes for an
+// x64 binary running emulated on Windows on Arm) and new enough
+function isUsableBinary(binaryPath) {
+  return isBuiltForArch(binaryPath, targetArch) && supportsSelectionCopy(binaryPath);
 }
 
 function supportsSelectionCopy(binaryPath) {
@@ -102,9 +113,13 @@ async function tryDownload() {
   });
 
   if (result.status === 0 && fs.existsSync(outputBinary)) {
-    if (supportsSelectionCopy(outputBinary)) {
+    if (isUsableBinary(outputBinary)) {
       log("Successfully downloaded prebuilt binary");
       return true;
+    }
+    if (supportsSelectionCopy(outputBinary)) {
+      wrongArch.setAside("Downloaded binary");
+      return false;
     }
     discardStaleBinary(
       "Discarded prebuilt binary without selection-copy-v1 support; compiling locally"
@@ -189,9 +204,13 @@ function tryCompile() {
     }
 
     if (result.status === 0 && fs.existsSync(outputBinary)) {
-      if (supportsSelectionCopy(outputBinary)) {
+      if (isUsableBinary(outputBinary)) {
         log(`Successfully built with ${compiler.name}`);
         return true;
+      }
+      if (supportsSelectionCopy(outputBinary)) {
+        wrongArch.setAside(`Binary built with ${compiler.name}`);
+        continue;
       }
       discardStaleBinary(`Binary built with ${compiler.name} lacks selection-copy-v1; discarded`);
     }
@@ -210,18 +229,27 @@ async function main() {
     return;
   }
 
-  const downloaded = await tryDownload();
-  if (downloaded) {
+  // A working binary for another arch is kept only if nothing below yields a
+  // binary for targetArch (tryDownload would otherwise delete it)
+  if (
+    fs.existsSync(outputBinary) &&
+    !isBuiltForArch(outputBinary, targetArch) &&
+    supportsSelectionCopy(outputBinary)
+  ) {
+    wrongArch.setAside("Existing binary");
+  }
+
+  const obtained = (await tryDownload()) || tryCompile();
+  if (obtained) {
+    wrongArch.discard();
     return;
   }
 
-  const compiled = tryCompile();
-  if (compiled) {
-    return;
-  }
-
-  if (fs.existsSync(outputBinary) && !supportsSelectionCopy(outputBinary)) {
+  if (fs.existsSync(outputBinary) && !isUsableBinary(outputBinary)) {
     discardStaleBinary("Removed stale fast-paste binary so packaging cannot ship it");
+  }
+  if (wrongArch.restore()) {
+    return;
   }
 
   console.warn("[windows-fast-paste] Could not obtain Windows fast-paste binary.");

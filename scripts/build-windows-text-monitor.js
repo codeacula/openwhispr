@@ -8,6 +8,7 @@
 const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { isBuiltForArch, createWrongArchFallback } = require("./lib/pe-machine");
 
 const isWindows = process.platform === "win32";
 if (!isWindows) {
@@ -17,11 +18,15 @@ if (!isWindows) {
 const projectRoot = path.resolve(__dirname, "..");
 const cSource = path.join(projectRoot, "resources", "windows-text-monitor.c");
 const outputDir = path.join(projectRoot, "resources", "bin");
+// TARGET_ARCH is set per leg by the Windows CI matrix
+const targetArch = process.env.TARGET_ARCH || process.arch;
 const outputBinary = path.join(outputDir, "windows-text-monitor.exe");
 
 function log(message) {
   console.log(`[windows-text-monitor] ${message}`);
 }
+
+const wrongArch = createWrongArchFallback(outputBinary, targetArch, log);
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -31,6 +36,10 @@ function ensureDir(dirPath) {
 
 function isBinaryUpToDate() {
   if (!fs.existsSync(outputBinary)) {
+    return false;
+  }
+
+  if (!isBuiltForArch(outputBinary, targetArch)) {
     return false;
   }
 
@@ -62,8 +71,12 @@ async function tryDownload() {
   });
 
   if (result.status === 0 && fs.existsSync(outputBinary)) {
-    log("Successfully downloaded prebuilt binary");
-    return true;
+    if (isBuiltForArch(outputBinary, targetArch)) {
+      log("Successfully downloaded prebuilt binary");
+      return true;
+    }
+    wrongArch.setAside("Downloaded binary");
+    return false;
   }
 
   log("Download failed or binary not found after download");
@@ -138,8 +151,13 @@ function tryCompile() {
     }
 
     if (result.status === 0 && fs.existsSync(outputBinary)) {
-      log(`Successfully built with ${compiler.name}`);
-      return true;
+      if (isBuiltForArch(outputBinary, targetArch)) {
+        log(`Successfully built with ${compiler.name}`);
+        return true;
+      }
+      // An x86_64 MinGW gcc on a Windows on Arm machine, say
+      wrongArch.setAside(`Binary built with ${compiler.name}`);
+      continue;
     }
 
     log(`${compiler.name} compilation failed, trying next...`);
@@ -156,13 +174,18 @@ async function main() {
     return;
   }
 
-  const compiled = tryCompile();
-  if (compiled) {
+  // Kept only if nothing below yields a binary for targetArch
+  if (fs.existsSync(outputBinary) && !isBuiltForArch(outputBinary, targetArch)) {
+    wrongArch.setAside("Existing binary");
+  }
+
+  const obtained = tryCompile() || (await tryDownload());
+  if (obtained) {
+    wrongArch.discard();
     return;
   }
 
-  const downloaded = await tryDownload();
-  if (downloaded) {
+  if (wrongArch.restore()) {
     return;
   }
 

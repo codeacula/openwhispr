@@ -7,6 +7,7 @@ const { Arch } = require("app-builder-lib");
 
 const {
   verifyWindowsArm64Binaries,
+  verifyWindowsX64Binaries,
   findForeignArchBinaries,
   readPeMachine,
 } = require("../../scripts/afterPack");
@@ -115,4 +116,42 @@ test("x64 Windows, macOS and Linux builds are not checked", (t) => {
   assert.doesNotThrow(() => verifyWindowsArm64Binaries(context(dir, "x64")));
   assert.doesNotThrow(() => verifyWindowsArm64Binaries(context(dir, "arm64", "darwin")));
   assert.doesNotThrow(() => verifyWindowsArm64Binaries(context(dir, "arm64", "linux")));
+});
+
+// An x64 build: x64 binaries plus x86 helpers, all fine on x64
+function makeX64AppOutDir(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "afterpack-x64-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  writePe(path.join(dir, "OpenWhispr.exe"), X64);
+  writePe(path.join(dir, "resources", "bin", "whisper-server-win32-x64.exe"), X64);
+  writePe(path.join(dir, "resources", "bin", "ggml.dll"), X64);
+  writePe(path.join(dir, "resources", "bin", "msvcp140.dll"), X64);
+  writePe(path.join(dir, "resources", "elevate.exe"), X86);
+  return dir;
+}
+
+test("an x64 build of x64 and x86 binaries passes", (t) => {
+  assert.doesNotThrow(() => verifyWindowsX64Binaries(context(makeX64AppOutDir(t), "x64")));
+});
+
+// Both arches download same-named DLLs into resources/bin, so an arm64
+// download overwrites them under x64 exes that still look installed
+test("ARM64 DLLs left in bin/ by an arm64 download fail an x64 build", (t) => {
+  const dir = makeX64AppOutDir(t);
+  writePe(path.join(dir, "resources", "bin", "ggml.dll"), ARM64);
+  writePe(path.join(dir, "resources", "bin", "msvcp140.dll"), ARM64);
+  assert.throws(
+    () => verifyWindowsX64Binaries(context(dir, "x64")),
+    (error) =>
+      /ARM64 binaries in the x64 build/.test(error.message) &&
+      error.message.includes(path.join("resources", "bin", "ggml.dll")) &&
+      error.message.includes(path.join("resources", "bin", "msvcp140.dll"))
+  );
+});
+
+test("the x64 check leaves arm64, macOS and Linux builds alone", (t) => {
+  const dir = makeAppOutDir(t);
+  assert.doesNotThrow(() => verifyWindowsX64Binaries(context(dir, "arm64")));
+  assert.doesNotThrow(() => verifyWindowsX64Binaries(context(dir, "x64", "darwin")));
+  assert.doesNotThrow(() => verifyWindowsX64Binaries(context(dir, "x64", "linux")));
 });

@@ -155,3 +155,51 @@ test("deleting a model removes its folder", async (t) => {
   });
   assert.equal(fs.existsSync(path.join(modelsDir, "small")), false);
 });
+
+test("deleting every model removes the whole NPU models folder", async (t) => {
+  const { manager, modelsDir } = armManager(t);
+  installModel(modelsDir, "small");
+  installModel(modelsDir, "turbo");
+  assert.deepEqual(await manager.deleteAllModels(), { success: true, deleted: true });
+  assert.equal(fs.existsSync(modelsDir), false);
+  assert.deepEqual(await manager.deleteAllModels(), { success: true, deleted: false });
+});
+
+test("only models with NPU builds are NPU models", (t) => {
+  const { manager } = armManager(t);
+  assert.equal(manager.isNpuModel("small"), true);
+  assert.equal(manager.isNpuModel("large"), false);
+  assert.equal(manager.isNpuModel("constructor"), false);
+});
+
+// A cancelled download winds down at the end of its current step; deleting
+// before then would let a finishing install bring the model back.
+test("deleting waits for a running download of that model to stop", async (t) => {
+  const { manager, modelsDir } = armManager(t);
+  installModel(modelsDir, "small");
+  let aborted = false;
+  const download = {
+    model: "small",
+    abort: () => {
+      aborted = true;
+      setTimeout(() => {
+        if (manager.currentDownload === download) manager.currentDownload = null;
+      }, 250);
+    },
+  };
+  manager.currentDownload = download;
+  await manager.deleteModel("small");
+  assert.equal(aborted, true);
+  assert.equal(manager.currentDownload, null);
+  assert.equal(fs.existsSync(path.join(modelsDir, "small")), false);
+});
+
+test("deleting one model leaves another model's download running", async (t) => {
+  const { manager, modelsDir } = armManager(t);
+  installModel(modelsDir, "small");
+  let aborted = false;
+  manager.currentDownload = { model: "turbo", abort: () => (aborted = true) };
+  await manager.deleteModel("small");
+  assert.equal(aborted, false);
+  assert.equal(manager.currentDownload.model, "turbo");
+});

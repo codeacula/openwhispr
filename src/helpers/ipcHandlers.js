@@ -1462,6 +1462,40 @@ class IPCHandlers {
     return !!modelName;
   }
 
+  // A model's NPU build lives in whisper-npu-models, apart from the ggml model it
+  // accelerates, and goes with it: the NPU card (its only Remove button) hides
+  // once the CPU model is gone, and a build left behind would quietly be used
+  // again after the CPU model is downloaded again. null removes every build.
+  async _deleteNpuWhisperBuilds(modelName) {
+    if (!this.whisperNpuManager || (modelName && !this.whisperNpuManager.isNpuModel(modelName))) {
+      return;
+    }
+    try {
+      if (this._npuServerHolds(modelName)) {
+        await this.whisperManager.stopServer().catch(() => {});
+      }
+      const result = modelName
+        ? await this.whisperNpuManager.deleteModel(modelName)
+        : await this.whisperNpuManager.deleteAllModels();
+      if (result.deleted) broadcastToWindows("whisper-gpu-status-changed");
+    } catch (error) {
+      debugLogger.warn("Failed to delete Whisper NPU builds", {
+        model: modelName,
+        error: error.message,
+      });
+    }
+  }
+
+  // The NPU server memory-maps a model's files, which Windows won't delete while
+  // it runs. Asked of the server itself, whose model and backend are set
+  // before it spawns: currentServerModel is only set once a start finishes, so
+  // it names the previous model while a new one is loading. null: any model.
+  _npuServerHolds(modelName) {
+    const server = this.whisperManager.serverManager;
+    if (!server.useNpu || !(server.process || server.startupPromise)) return false;
+    return !modelName || server.modelPath === this.whisperManager.getModelPath(modelName);
+  }
+
   _syncStartupEnv(setVars, clearVars = []) {
     let changed = false;
     for (const [key, value] of Object.entries(setVars)) {
@@ -3546,11 +3580,15 @@ class IPCHandlers {
     });
 
     ipcMain.handle("delete-whisper-model", async (event, modelName) => {
-      return this.whisperManager.deleteWhisperModel(modelName);
+      const result = await this.whisperManager.deleteWhisperModel(modelName);
+      await this._deleteNpuWhisperBuilds(modelName);
+      return result;
     });
 
     ipcMain.handle("delete-all-whisper-models", async () => {
-      return this.whisperManager.deleteAllWhisperModels();
+      const result = await this.whisperManager.deleteAllWhisperModels();
+      await this._deleteNpuWhisperBuilds(null);
+      return result;
     });
 
     ipcMain.handle("cancel-whisper-download", async (event) => {
@@ -3825,8 +3863,7 @@ class IPCHandlers {
       if (!this.whisperNpuManager) return { success: false };
       try {
         const reloadModel = this._whisperReloadModel();
-        // The NPU server memory-maps the model files, which Windows won't delete
-        if (this.whisperManager.serverManager.useNpu && reloadModel === modelName) {
+        if (this._npuServerHolds(modelName)) {
           await this.whisperManager.stopServer().catch(() => {});
         }
         const result = await this.whisperNpuManager.deleteModel(modelName);
@@ -4243,7 +4280,9 @@ class IPCHandlers {
         errors.push(`Parakeet stop: ${e.message}`);
       }
       try {
-        this.whisperManager?.stopServer();
+        // Awaited: the NPU server memory-maps its model files, which Windows
+        // won't delete while it runs
+        await this.whisperManager?.stopServer();
       } catch (e) {
         errors.push(`Whisper stop: ${e.message}`);
       }
@@ -4320,6 +4359,11 @@ class IPCHandlers {
         if (fs.existsSync(whisperDir)) fs.rmSync(whisperDir, { recursive: true, force: true });
       } catch (e) {
         errors.push(`Whisper models: ${e.message}`);
+      }
+      try {
+        await this.whisperNpuManager?.deleteAllModels();
+      } catch (e) {
+        errors.push(`Whisper NPU models: ${e.message}`);
       }
       try {
         await this.parakeetManager?.deleteAllParakeetModels();

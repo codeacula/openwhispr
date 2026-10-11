@@ -18,6 +18,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const { Arch } = require("app-builder-lib");
 const { buildLinuxWrapperScript } = require("./lib/linux-launcher");
+const { PE_MACHINE, readPeMachine } = require("./lib/pe-machine");
 const {
   WINDOWS_ONNXRUNTIME_PRIVATE_NAME,
   WINDOWS_ONNXRUNTIME_UPSTREAM_NAME,
@@ -298,8 +299,7 @@ function verifyWhisperNpuRuntime(context) {
   }
 }
 
-// PE IMAGE_FILE_HEADER.Machine values
-const PE_MACHINE_ARM64 = 0xaa64;
+const PE_MACHINE_ARM64 = PE_MACHINE.arm64;
 
 // What a Windows on Arm build ships as x64/x86 on purpose: nothing upstream
 // publishes for arm64, and Windows runs them under its x64 emulation.
@@ -311,20 +311,6 @@ const WINDOWS_ARM64_EMULATED_BINARIES = new Set([
   "fastlist-0.3.0-x86.exe",
   "elevate.exe", // electron-builder's x86 elevation helper for per-machine installs
 ]);
-
-// Machine field of a PE image, or null for anything that is not one
-function readPeMachine(filePath) {
-  const fd = fs.openSync(filePath, "r");
-  try {
-    const dos = Buffer.alloc(64);
-    if (fs.readSync(fd, dos, 0, 64, 0) < 64 || dos.readUInt16LE(0) !== 0x5a4d) return null;
-    const header = Buffer.alloc(6);
-    if (fs.readSync(fd, header, 0, 6, dos.readUInt32LE(0x3c)) < 6) return null;
-    return header.readUInt32LE(0) === 0x00004550 ? header.readUInt16LE(4) : null;
-  } finally {
-    fs.closeSync(fd);
-  }
-}
 
 // Every .exe, .dll and .node under rootDir built for another machine than
 // expected, except the allowed file names
@@ -359,6 +345,28 @@ function verifyWindowsArm64Binaries(context) {
     );
   }
   console.log("  afterPack: verified every Windows binary in the arm64 build is ARM64");
+}
+
+// The x64 counterpart, limited to ARM64 images in bin/. Both Windows arches
+// download same-named DLLs (ggml.dll, llama.dll, ow-onnxrt.dll, msvcp140.dll)
+// flat into resources/bin, and each arch's "already installed" check looks at
+// its own exe only, so downloading the other arch (a --all download, or a
+// build after switching TARGET_ARCH) leaves ARM64 DLLs beside x64 exes, which
+// then fail to load (0xC000007B). x86 helpers are fine on x64, so only ARM64
+// is flagged.
+function verifyWindowsX64Binaries(context) {
+  if (context.electronPlatformName !== "win32" || Arch[context.arch] !== "x64") return;
+  const binDir = path.join(resolveResourcesDir(context), "bin");
+  const arm64 = collectFiles(binDir)
+    .filter((file) => /\.(exe|dll|node)$/i.test(file))
+    .filter((file) => readPeMachine(file) === PE_MACHINE_ARM64);
+  if (arm64.length > 0) {
+    const list = arm64.map((file) => path.relative(context.appOutDir, file)).join(", ");
+    throw new Error(
+      `afterPack: ARM64 binaries in the x64 build: ${list} — resources/bin last held an arm64 download; delete those files and re-run the downloads for x64`
+    );
+  }
+  console.log("  afterPack: verified the x64 build's bin/ has no ARM64 binaries");
 }
 
 function verifyUnpackedBinaries(context) {
@@ -416,11 +424,13 @@ exports.default = async function (context) {
   verifyWhisperNpuRuntime(context);
   verifyUnpackedBinaries(context);
   verifyWindowsArm64Binaries(context);
+  verifyWindowsX64Binaries(context);
   registerMacResourceBinariesForSigning(context);
 };
 
 exports.verifyWindowsOnnxRuntimePrivatized = verifyWindowsOnnxRuntimePrivatized;
 exports.verifyWindowsKeyListener = verifyWindowsKeyListener;
 exports.verifyWindowsArm64Binaries = verifyWindowsArm64Binaries;
+exports.verifyWindowsX64Binaries = verifyWindowsX64Binaries;
 exports.findForeignArchBinaries = findForeignArchBinaries;
 exports.readPeMachine = readPeMachine;
