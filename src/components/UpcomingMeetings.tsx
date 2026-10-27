@@ -17,7 +17,7 @@ import { canManageSystemAudioInApp } from "../utils/systemAudioAccess";
 import { getMeetingJoinUrl } from "../helpers/meetingJoinUrl";
 import TouchGrass from "./TouchGrass";
 import { createGrassRustle, type GrassRustle } from "../utils/grassRustle";
-import { parseEventDate } from "../utils/dateFormatting";
+import { formatTimeRange, parseEventDate } from "../utils/dateFormatting";
 
 interface UpcomingMeetingsProps {
   events: CalendarEvent[];
@@ -33,12 +33,6 @@ const openJoinUrl = (url: string) => {
     window.open(url, "_blank");
   }
 };
-
-function formatTimeRange(locale: string, startTime: string, endTime: string): string {
-  const format = (value: string) =>
-    new Date(value).toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
-  return `${format(startTime)} – ${format(endTime)}`;
-}
 
 // Today plus the next days that have events, capped at a working week.
 const MAX_DAY_CARDS = 5;

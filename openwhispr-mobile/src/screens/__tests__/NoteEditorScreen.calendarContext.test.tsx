@@ -251,6 +251,14 @@ jest.mock('@/components/ui/SystemIcon', () => ({
   SystemIcon: () => null,
 }));
 
+jest.mock('@/components/ui/GlassBackButton', () => ({
+  GlassBackButton: ({ fallbackRoute }: { fallbackRoute?: string }) =>
+    (() => {
+      const { Text: MockText } = require('react-native');
+      return <MockText testID="back-button">{fallbackRoute}</MockText>;
+    })(),
+}));
+
 jest.mock('@/components/notes/NoteActionsMenu', () => ({
   NoteActionsMenu: ({
     actions,
@@ -371,6 +379,7 @@ jest.mock('@/components/notes/MoveToFolderSheet', () => ({
 jest.mock('@/components/notes/NoteChatSheet', () => ({
   NoteChatSheet: ({
     draft,
+    error,
     canSend,
     suggestions,
     onDraftChange,
@@ -379,6 +388,7 @@ jest.mock('@/components/notes/NoteChatSheet', () => ({
     onClose,
   }: {
     draft: string;
+    error: string | null;
     canSend: boolean;
     suggestions: readonly { label: string; prompt: string }[];
     onDraftChange: (text: string) => void;
@@ -389,11 +399,13 @@ jest.mock('@/components/notes/NoteChatSheet', () => ({
     (() => {
       const {
         Pressable: MockPressable,
+        Text: MockText,
         TextInput: MockTextInput,
         View: MockView,
       } = require('react-native');
       return (
         <MockView>
+          {error ? <MockText testID="chat-error">{error}</MockText> : null}
           <MockTextInput testID="chat-draft" value={draft} onChangeText={onDraftChange} />
           <MockPressable
             testID="chat-send"
@@ -605,6 +617,8 @@ describe('NoteEditorScreen generated meeting context', () => {
 
   it('offers enable local AI alongside cloud once when local intelligence is disabled', async () => {
     mockProcessingModeState.activeMode = 'private';
+    mockNote = note({ isPrivate: 1 });
+    mockNotesState.notes = [mockNote];
     mockConfigState.config.appleLocalIntelligenceEnabled = false;
     const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
 
@@ -744,18 +758,15 @@ describe('NoteEditorScreen note chat', () => {
     expect(queryByTestId('chat-suggestion-Key decisions')).toBeNull();
   });
 
-  it.each([
-    ['note chat is off', { noteChatEnabled: false }],
-    ['the old shared switch was turned off', { dictationAgentEnabled: false }],
-  ])('hides every Ask entry point when %s', (_label, settings) => {
-    Object.assign(mockConfigState.config, settings);
+  it('hides every Ask entry point when note chat is off', () => {
+    Object.assign(mockConfigState.config, { noteChatEnabled: false });
     const { queryByText, queryByTestId } = render(<NoteEditorScreen />);
     expect(queryByText('Ask about this note')).toBeNull();
     expect(queryByTestId(PILL)).toBeNull();
   });
 
   it('keeps note chat when only the voice assistant is off', () => {
-    Object.assign(mockConfigState.config, { dictationAgentEnabled: false, noteChatEnabled: true });
+    Object.assign(mockConfigState.config, { dictationAgentEnabled: false });
     const { getByTestId } = render(<NoteEditorScreen />);
     expect(getByTestId(PILL)).toBeTruthy();
   });
@@ -853,6 +864,62 @@ describe('NoteEditorScreen note chat', () => {
       await Promise.resolve();
     });
     expect(ReasoningService.chatOverNote).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('NoteEditorScreen note chat errors', () => {
+  it('words an on-device failure in note chat instead of showing the native text', async () => {
+    const chatErrorMessage = jest.requireActual('@/lib/chat/chatErrorMessage');
+    const toChatErrorMessage = jest.spyOn(chatErrorMessage, 'toChatErrorMessage');
+    (ReasoningService.chatOverNote as jest.Mock).mockRejectedValueOnce(
+      new LocalReasoningError('APPLE_LLM_FAILED', 'GenerationError -1'),
+    );
+    const { getByTestId, findByTestId } = render(<NoteEditorScreen />);
+    await act(async () => {
+      fireEvent.press(getByTestId('chat-suggestion-List action items'));
+    });
+
+    expect((await findByTestId('chat-error')).props.children).toBe(
+      chatErrorMessage.CHAT_ON_DEVICE_UNAVAILABLE_MESSAGE,
+    );
+    expect(toChatErrorMessage).toHaveBeenCalledWith(expect.any(LocalReasoningError), {
+      surface: 'noteChat',
+    });
+    toChatErrorMessage.mockRestore();
+  });
+
+  it('says an empty answer came back rather than showing a blank bubble', async () => {
+    const { CHAT_EMPTY_ANSWER_MESSAGE } = jest.requireActual('@/lib/chat/chatErrorMessage');
+    (ReasoningService.chatOverNote as jest.Mock).mockResolvedValueOnce({ text: ' ', model: 'x' });
+    const { getByTestId, findByTestId } = render(<NoteEditorScreen />);
+    await act(async () => {
+      fireEvent.press(getByTestId('chat-suggestion-List action items'));
+    });
+    expect((await findByTestId('chat-error')).props.children).toBe(CHAT_EMPTY_ANSWER_MESSAGE);
+  });
+
+  it('shows another failure’s own text', async () => {
+    (ReasoningService.chatOverNote as jest.Mock).mockRejectedValueOnce(new Error('offline'));
+    const { getByTestId, findByTestId } = render(<NoteEditorScreen />);
+    await act(async () => {
+      fireEvent.press(getByTestId('chat-suggestion-List action items'));
+    });
+    expect((await findByTestId('chat-error')).props.children).toBe('offline');
+  });
+});
+
+describe('NoteEditorScreen missing note', () => {
+  it('keeps a way back when the note is gone, on either stack', () => {
+    mockNotesState.notes = [];
+    mockRouteNoteId = '99';
+    const { getByText, getByTestId, rerender } = render(<NoteEditorScreen />);
+    expect(getByText('Note not found')).toBeTruthy();
+    expect(getByTestId('back-button').props.children).toBe('/(tabs)/(notes)');
+
+    rerender(
+      <NoteEditorScreen stack={{ root: '/(tabs)/(chat)', routePrefix: '/(tabs)/(chat)/note' }} />,
+    );
+    expect(getByTestId('back-button').props.children).toBe('/(tabs)/(chat)');
   });
 });
 
@@ -966,6 +1033,8 @@ describe('NoteEditorScreen On-Device and provider routes', () => {
 
   it('names the provider when it offers to send a private note there once', async () => {
     mockProcessingModeState.activeMode = 'private';
+    mockNote = note({ isPrivate: 1 });
+    mockNotesState.notes = [mockNote];
     mockAppleAvailability = 'deviceNotEligible';
     mockConfigState.config.inference = {
       notes: {
@@ -990,6 +1059,8 @@ describe('NoteEditorScreen On-Device and provider routes', () => {
 
   it('still offers to enable local AI when the fallback is a provider', async () => {
     mockProcessingModeState.activeMode = 'private';
+    mockNote = note({ isPrivate: 1 });
+    mockNotesState.notes = [mockNote];
     mockConfigState.config.appleLocalIntelligenceEnabled = false;
     mockConfigState.config.inference = {
       notes: {
@@ -1008,9 +1079,29 @@ describe('NoteEditorScreen On-Device and provider routes', () => {
     expect(labels).toEqual(['Cancel', 'Enable Local AI', 'Use Groq Once']);
   });
 
+  // Note formatting follows its own selection in Local Mode; only a private note stays here.
+  it('sends a shared note to the provider saved for note formatting in Local Mode', async () => {
+    mockProcessingModeState.activeMode = 'private';
+    mockAppleAvailability = 'deviceNotEligible';
+    mockConfigState.config.inference = {
+      notes: {
+        mode: 'providers',
+        providerId: 'groq',
+        modelId: 'llama',
+        credentialRef: 'provider.groq',
+      },
+    };
+    const { getByTestId } = render(<NoteEditorScreen />);
+    await act(async () => {
+      fireEvent.press(getByTestId('run-action-1'));
+    });
+    await waitFor(() => expect(ReasoningService.processText).toHaveBeenCalledTimes(1));
+    expect(alertSpy).not.toHaveBeenCalled();
+  });
+
   it('lets a signed-out user chat with a note when chat is On-Device', async () => {
     mockAuthState.user = null;
-    mockConfigState.config.inference = { agent: { mode: 'local' } };
+    mockConfigState.config.inference = { noteChat: { mode: 'local' } };
     (ReasoningService.chatOverNote as jest.Mock).mockResolvedValue({ text: 'Answer', model: 'x' });
     const { getByTestId } = render(<NoteEditorScreen />);
     fireEvent.changeText(getByTestId('chat-draft'), 'Who owns the launch?');
@@ -1777,6 +1868,24 @@ describe('NoteEditorScreen voice setup', () => {
       fireEvent.press(getByTestId('thats-me-read-script'));
 
       expect(mockPush).toHaveBeenCalledWith('/(tabs)/(notes)/voice-enrollment?owner=1&noteId=7');
+    } finally {
+      Platform.OS = platform;
+    }
+  });
+
+  it('opens the script on the stack the note was opened from', () => {
+    const platform = Platform.OS;
+    Platform.OS = 'android';
+    try {
+      const { getByTestId } = render(
+        <NoteEditorScreen stack={{ root: '/(tabs)/(chat)', routePrefix: '/(tabs)/(chat)/note' }} />,
+      );
+      fireEvent.press(getByTestId('voice-setup-banner-set-up'));
+      fireEvent.press(getByTestId('thats-me-read-script'));
+
+      expect(mockPush).toHaveBeenCalledWith(
+        '/(tabs)/(chat)/note/voice-enrollment?owner=1&noteId=7',
+      );
     } finally {
       Platform.OS = platform;
     }

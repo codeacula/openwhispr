@@ -1,8 +1,9 @@
-import type { ReasoningRequest, ReasoningResponse } from '../../types';
+import type { ReasoningRequest, ReasoningResponse, ReasoningRoutingOptions } from '../../types';
 import { buildProviderPrompt, stripThinkingTags } from './buildProviderPrompt';
 import { api } from '../../lib/apiClient';
 import { buildChatOverNotePayload, type ChatOverNoteRequest } from '../../lib/notes/chatOverNote';
 import {
+  fitsLocalCleanupOutput,
   fitsLocalReasoningBudget,
   getLocalReasoningReadiness,
   getLocalReasoningUnavailableMessage,
@@ -45,6 +46,11 @@ interface CallApiOptions {
   agentName?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /**
+   * Cleanup keeps the dictated text when the server returns none. A chat answer must not, or the
+   * whole prompt, notes included, would show as the answer.
+   */
+  keepTextOnEmptyReply?: boolean;
 }
 
 export class ReasoningService {
@@ -62,7 +68,10 @@ export class ReasoningService {
       // and skip server-side resolution.
       body.systemPrompt = options.systemPrompt;
     } else {
-      // Let the API resolve a localized cleanup prompt from these fields.
+      // Let the API resolve a localized cleanup prompt from these fields. promptMode "cleanup" keeps
+      // the API from treating a dictation that addresses the assistant by name as a command: the
+      // voice assistant is the keyboard's compose button.
+      body.promptMode = 'cleanup';
       if (options.language) body.language = options.language;
       if (options.locale) body.locale = options.locale;
       if (options.customDictionary && options.customDictionary.length > 0) {
@@ -71,10 +80,7 @@ export class ReasoningService {
       if (options.tone && options.tone !== 'default') {
         body.tone = options.tone;
       }
-      if (options.customPrompt) {
-        body.customPrompt = options.customPrompt;
-        body.promptMode = 'cleanup';
-      }
+      if (options.customPrompt) body.customPrompt = options.customPrompt;
     }
 
     if (options.agentName) {
@@ -99,7 +105,8 @@ export class ReasoningService {
       throw error;
     }
 
-    const content = stripThinkingTags(data.text || text);
+    const keepText = options.keepTextOnEmptyReply ?? true;
+    const content = stripThinkingTags(data.text || (keepText ? text : ''));
 
     if (__DEV__) {
       console.log(
@@ -139,7 +146,9 @@ export class ReasoningService {
     const allowCloudFallback = routing?.allowCloudFallback === true;
     const chosenProvider = usesProviders && routing?.sendToChosenProvider === true;
     let privateContent = !chosenProvider && routing?.isPrivateNote === true;
-    if ((usesProviders && !chosenProvider) || localSelected) {
+    // Local Mode keeps cleanup and note chat on this iPhone unless the user chose otherwise; note
+    // formatting follows its own selection there.
+    if (scope !== 'notes' && ((usesProviders && !chosenProvider) || localSelected)) {
       const { useProcessingModeStore } =
         require('@/store/useProcessingModeStore') as typeof import('@/store/useProcessingModeStore');
       privateContent ||= useProcessingModeStore.getState().activeMode === 'private';
@@ -164,11 +173,16 @@ export class ReasoningService {
         const readiness = await getLocalReasoningReadiness();
         if (readiness.status === 'ready') {
           const instructions = buildLocalReasoningInstructions(localRequest);
-          const fits = await fitsLocalReasoningBudget({
-            instructions,
-            prompt: localRequest.text,
-            readiness,
-          });
+          const fits =
+            (await fitsLocalReasoningBudget({
+              instructions,
+              prompt: localRequest.text,
+              readiness,
+            })) &&
+            // The input fitting the context isn't enough for cleanup: its reply is as long as the
+            // transcript, and Apple Intelligence cuts it off at LOCAL_OUTPUT_TOKEN_RESERVE without an
+            // error.
+            (scope !== 'cleanup' || (await fitsLocalCleanupOutput(text)));
 
           if (!fits) {
             if (!allowCloudFallback) {
@@ -181,7 +195,8 @@ export class ReasoningService {
             try {
               return await LocalReasoningService.processText(localRequest);
             } catch (error) {
-              if (!allowCloudFallback) throw error;
+              // A cancelled or timed-out request is over; it must not start again in the cloud.
+              if (!allowCloudFallback || signal?.aborted) throw error;
             }
           }
         } else if (!allowCloudFallback) {
@@ -235,25 +250,41 @@ export class ReasoningService {
   }
 
   static async chatOverNote(request: ChatOverNoteRequest): Promise<ReasoningResponse> {
-    const payload = buildChatOverNotePayload(request);
+    return this.chat({
+      ...buildChatOverNotePayload(request),
+      signal: request.signal,
+      routing: request.routing,
+      inferenceRoute: request.inferenceRoute,
+    });
+  }
+
+  /** Sends an already-built chat payload through the Note Chat route. */
+  static async chat(request: {
+    systemPrompt: string;
+    text: string;
+    signal?: AbortSignal;
+    routing?: ReasoningRoutingOptions;
+    inferenceRoute?: ReasoningRequest['inferenceRoute'];
+  }): Promise<ReasoningResponse> {
     const { getInferenceSelection } =
       require('@/lib/inferenceRouting') as typeof import('@/lib/inferenceRouting');
-    const selection = request.inferenceRoute ?? getInferenceSelection('agent');
+    const selection = request.inferenceRoute ?? getInferenceSelection('noteChat');
     if (selection?.mode === 'providers' || selection?.mode === 'local') {
       return this.processText({
-        text: payload.text,
-        systemPrompt: payload.systemPrompt,
+        text: request.text,
+        systemPrompt: request.systemPrompt,
         signal: request.signal,
-        inferenceScope: 'agent',
+        inferenceScope: 'noteChat',
         inferenceRoute: request.inferenceRoute,
         routing: request.routing,
       });
     }
     // Cloud note chat keeps its pre-BYOK behavior: the consent dialog in the
     // editor is the privacy gate, and the answer always comes from the hosted model.
-    return this.callApi(payload.text, {
-      systemPrompt: payload.systemPrompt,
+    return this.callApi(request.text, {
+      systemPrompt: request.systemPrompt,
       signal: request.signal,
+      keepTextOnEmptyReply: false,
     });
   }
 }

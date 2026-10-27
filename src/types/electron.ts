@@ -3,9 +3,11 @@ import type { ReasoningConfig } from "../services/BaseReasoningService";
 import type { PermissionGuideState, PermissionGuideAction } from "./permissionGuide";
 import type { TinfoilCatalogModel } from "../models/tinfoilModels";
 import type { UsageResponse } from "../lib/usageStore";
+import type { DictationTone, ToneAppCategory } from "../config/toneStyle";
 import type { OrgPolicy } from "./policy";
 import type { TechnicalErrorDetailsData } from "../components/ui/useToast";
 import type { ProviderSettingsTarget } from "../utils/describeProviderError";
+import type { RemovedTranscriptSegment } from "../utils/diarizationCompletion";
 import type {
   ManagedEnterpriseConfig,
   ManagedEnterpriseRequestContext,
@@ -13,6 +15,8 @@ import type {
 import type {
   CalendarAvailabilityRequest,
   CalendarAvailabilityResult,
+  CalendarEvent,
+  LinkableCalendarEvent,
   MicrosoftCalendarAccount,
 } from "./calendar";
 import type {
@@ -96,6 +100,15 @@ export interface NoteRecordingProvider {
 // main process defaults a missing value to "openai-realtime" for pre-1.8.4
 // renderers (#1624).
 export interface DictationRealtimeSessionOptions {
+  pipelineOptions?: {
+    agentName?: string;
+    customDictionary?: string[];
+    customPrompt?: string;
+    tone?: DictationTone;
+    appCategory?: ToneAppCategory;
+    language?: string;
+    locale?: string;
+  };
   provider: string;
   baseUrl?: string;
   model?: string;
@@ -111,6 +124,8 @@ export interface DictationRealtimeSessionOptions {
 export interface DictationLanguageMetadata {
   language: string | null;
   languageConfidence: number | null;
+  // Sum of detector scores for Orukeet's 25 languages, not a calibrated probability.
+  languageSupportedScore?: number;
   languageAudioSeconds?: number;
 }
 
@@ -431,6 +446,14 @@ export interface NoteItem {
   // Server updated_at this device last acked (push response or pull); echoed
   // as base_updated_at on the next PATCH. Null = pre-guard row, pushes LWW.
   cloud_updated_at?: string | null;
+  cloud_revision?: number | null;
+  cloud_create_rejected?: number;
+  cloud_create_pending?: string | null;
+  content_sync_operation?: "set" | "clear" | null;
+  enhanced_content_sync_operation?: "set" | "clear" | null;
+  // Local-only counters distinguish later edits/Undo from an in-flight snapshot.
+  content_edit_generation?: number;
+  enhanced_content_edit_generation?: number;
   created_at: string;
   updated_at: string;
   client_note_id: string;
@@ -471,6 +494,11 @@ export type NotePushSnapshot = Pick<
   | "sync_status"
   | "deleted_at"
   | "cloud_updated_at"
+  | "cloud_revision"
+  | "content_sync_operation"
+  | "enhanced_content_sync_operation"
+  | "content_edit_generation"
+  | "enhanced_content_edit_generation"
   | "left_team"
 >;
 
@@ -479,13 +507,54 @@ export type NoteUpdateSnapshot = NotePushSnapshot;
 
 export interface NoteCreateAckResult {
   success: boolean;
-  outcome: "synced" | "pending" | "already-linked" | "orphaned" | "unresolved";
+  outcome:
+    | "synced"
+    | "pending"
+    | "already-linked"
+    | "orphaned"
+    | "unresolved"
+    | "awaiting-cloud"
+    | "conflict";
+  note?: NoteItem;
+}
+
+export interface NoteCreateAckWriteOptions {
+  settleIfUnchanged?: boolean;
+  cloudRevision?: number | null;
+  // The server refused the create without writing it (write_applied: false).
+  writeRejected?: boolean;
+  cloudNote?: NoteCloudText;
+  requiresReconciliation?: boolean;
+  reconcilePending?: boolean;
+  localFolderId?: number | null;
+  localSpaceId?: number;
+}
+
+// A cloud note row's text fields, as a pull or a write response carries them.
+export interface NoteCloudText {
+  content?: string | null;
+  enhanced_content?: string | null;
+  enhancement_prompt?: string | null;
+  enhanced_at_content_hash?: string | null;
+  enhancement_template_id?: string | null;
+  content_state?: "set" | "clear" | null;
+  enhanced_content_state?: "set" | "clear" | null;
+}
+
+export interface NoteCloudBaseOptions {
+  // The user chose Keep on the conflict banner.
+  keepLocal?: boolean;
+  // The conflicting cloud copy Keep merges against: fields this device never
+  // edited take its values.
+  cloudNote?: NoteCloudText;
 }
 
 export interface NoteUpdateAckResult {
   success: boolean;
   outcome: "synced" | "pending" | "identity-changed";
   changes: number;
+  // Present when the ack took the server's copy of a text field.
+  note?: NoteItem;
 }
 
 export type ShareVisibility = "private" | "link" | "domain" | "invited";
@@ -834,6 +903,8 @@ export interface CudaWhisperStatus {
   inUse?: boolean;
   /** An older release installed the pack and this version can't use it. */
   needsUpdate?: boolean;
+  /** The bundled whisper-server is itself a GPU build and runs on the GPU, so no pack is offered. */
+  bundledGpu?: boolean;
 }
 
 export interface VulkanWhisperStatus {
@@ -850,6 +921,8 @@ export interface VulkanWhisperStatus {
   inUse?: boolean;
   /** An older release installed the pack and this version can't use it. */
   needsUpdate?: boolean;
+  /** The bundled whisper-server is itself a GPU build and runs on the GPU, so no pack is offered. */
+  bundledGpu?: boolean;
 }
 
 export interface NpuWhisperStatus {
@@ -982,6 +1055,36 @@ export interface ScreenRecordingAccessResult {
 export type CloudReasonPurpose = "cleanup" | "assistant" | "translation" | "noteFormatting";
 
 // Orukeet's audio language estimate, reported for the backend's per-user gate.
+export interface OrukeetLanguageRoutingTelemetry {
+  version: 1;
+  mode: "shadow" | "supported-0.30" | "supported-0.10";
+  auto: boolean;
+  eligible: boolean;
+  analyzedSeconds: number | null;
+  topLanguage: string | null;
+  topScore: number | null;
+  supportedScore: number | null;
+  legacyFallback: boolean;
+  top05Fallback: boolean;
+  candidate030: boolean | null;
+  candidate010: boolean | null;
+  selectedFallback: boolean;
+  fallbackAvailable: boolean;
+}
+export interface OrukeetCleanupTelemetry {
+  status: "complete" | "fallback" | "skipped";
+  model?: "gemma-4-12b";
+  processingMs?: number;
+  queueMs?: number;
+  firstTextMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+export interface OrukeetTelemetry {
+  orukeetLanguageRouting?: OrukeetLanguageRoutingTelemetry;
+  orukeetCleanup?: OrukeetCleanupTelemetry;
+}
+
 export interface SttDetectedLanguageFields {
   sttDetectedLanguage?: string;
   sttDetectedLanguageConfidence?: number;
@@ -1131,6 +1234,7 @@ export interface PasteToolsResult {
   hasWtype?: boolean;
   isWlroots?: boolean;
   isCosmic?: boolean;
+  wlCopyMissing?: boolean;
   tools?: string[];
   recommendedInstall?: string;
 }
@@ -1294,7 +1398,14 @@ declare global {
         clientSecret?: string;
         environment?: string;
         tenant?: string;
-      }) => Promise<{ success: boolean; error?: string; errorCode?: string; status?: number }>;
+      }) => Promise<{
+        success: boolean;
+        error?: string;
+        errorCode?: string;
+        status?: number;
+        /** The provider gave no verdict (busy, down, unreachable); the setup may be used. */
+        unverified?: boolean;
+      }>;
       pasteText: (
         text: string,
         options?: {
@@ -1303,7 +1414,11 @@ declare global {
           allowClipboardFallback?: boolean;
         }
       ) => Promise<
-        | { success: true; pasted: boolean; reason?: "modifiers-held" }
+        | {
+            success: true;
+            pasted: boolean;
+            reason?: "modifiers-held" | "wl-copy-missing" | "wl-copy-failed";
+          }
         | {
             success: false;
             pasted: false;
@@ -1345,6 +1460,8 @@ declare global {
           | "selection_changed"
           | "paste_failed"
           | "modifiers_held"
+          | "wl_copy_missing"
+          | "wl_copy_failed"
           | "selection_manager_unavailable";
         error?: string;
       }>;
@@ -1360,6 +1477,8 @@ declare global {
           | "target_changed"
           | "paste_failed"
           | "modifiers_held"
+          | "wl_copy_missing"
+          | "wl_copy_failed"
           | "selection_manager_unavailable";
         error?: string;
       }>;
@@ -1367,6 +1486,7 @@ declare global {
       showDictationPanel: () => Promise<void>;
       openSettingsSection?: (section: ProviderSettingsTarget) => Promise<{ success: boolean }>;
       captureDictationTarget?: () => Promise<{ success: boolean; pid: number | null }>;
+      captureDictationAppCategory?: () => Promise<ToneAppCategory>;
       onToggleDictation: (callback: () => void) => () => void;
       onToggleVoiceAgent?: (callback: () => void) => () => void;
       onToggleTranslation?: (callback: () => void) => () => void;
@@ -1419,6 +1539,8 @@ declare global {
             dictation?: { mode: string };
             notes?: { mode: string };
             streamingProvider?: string;
+            orukeetPipeline?: "gemma12";
+            orukeetLanguageRouting?: "off" | "shadow" | "supported-0.30" | "supported-0.10";
           } & PolicyFailureMetadata)
         | null
       >;
@@ -1575,8 +1697,9 @@ declare global {
       ) => Promise<{
         success: boolean;
         transcription?: TranscriptionItem;
+        warning?: string;
         error?: string;
-        code?: TranscriptionErrorCode;
+        code?: string;
         messageKey?: string;
       }>;
       updateTranscriptionText: (
@@ -1626,6 +1749,7 @@ declare global {
       updateNote: (
         id: number,
         updates: {
+          clear_fields?: Array<"content" | "enhanced_content">;
           title?: string;
           content?: string;
           enhanced_content?: string | null;
@@ -1707,6 +1831,11 @@ declare global {
         accountId: string | null,
         expectedAuthGeneration?: number
       ) => Promise<{ success: boolean; code?: string; error?: string }>;
+      closeActivationStream?: () => Promise<void>;
+      beginActivationCapture?: () => Promise<string | null>;
+      stopActivationCapture?: (id: string) => Promise<void>;
+      finishActivationCapture?: (id: string, words: number) => Promise<void>;
+      cancelActivationCapture?: (id: string) => Promise<void>;
       getActiveAccountScope?: () => Promise<ActiveAccountScope | null>;
       onActiveAccountScopeChanged?: (
         callback: (scope: ActiveAccountScope | null) => void
@@ -1899,7 +2028,7 @@ declare global {
       checkAccessibilityPermission: (silent?: boolean) => Promise<boolean>;
       promptAccessibilityPermission: () => Promise<boolean>;
       readClipboard: () => Promise<string>;
-      writeClipboard: (text: string) => Promise<{ success: boolean }>;
+      writeClipboard: (text: string) => Promise<{ success: boolean; xwaylandOnly?: boolean }>;
       copyLeaderboardImage: (dataUrl: string) => Promise<{ success: boolean; error?: string }>;
       saveLeaderboardImage: (
         dataUrl: string,
@@ -1995,9 +2124,9 @@ declare global {
       onNpuFallbackNotification?: (callback: () => void) => () => void;
       onWhisperGpuStatusChanged: (callback: () => void) => () => void;
 
-      // One-time "GPU pack needs re-downloading" notice from the legacy-layout migration
-      getGpuPackMigrationNotice: () => Promise<{ packs: string[] } | null>;
-      dismissGpuPackMigrationNotice: () => Promise<{ success: boolean }>;
+      // One-time "GPU pack needs re-downloading" notice, taken by the window that shows it
+      takeGpuPackMigrationNotice: () => Promise<{ packs: string[] } | null>;
+      onGpuPackMigrationNoticeReady: (callback: () => void) => () => void;
 
       // Parakeet operations (NVIDIA via sherpa-onnx)
       transcribeLocalParakeet: (
@@ -2259,6 +2388,7 @@ declare global {
         hasYdotool: boolean;
         hasYdotoold: boolean;
         hasWtype: boolean;
+        hasWlCopy: boolean;
         daemonRunning: boolean;
         hasService: boolean;
         hasUinput: boolean;
@@ -2268,8 +2398,7 @@ declare global {
         isKde: boolean;
         isWlroots: boolean;
         isCosmic: boolean;
-        hasXclip: boolean;
-        hasXsel: boolean;
+        requiresWlCopy: boolean;
       }>;
 
       // Globe key listener for hotkey capture (macOS only)
@@ -2571,7 +2700,8 @@ declare global {
           analyticsOccurredAt?: string;
           // Why a managed-streaming user's dictation went batch (rollout metric).
           streamingFallbackReason?: string;
-        } & SttDetectedLanguageFields
+        } & SttDetectedLanguageFields &
+          OrukeetTelemetry
       ) => Promise<
         {
           success: boolean;
@@ -2596,10 +2726,13 @@ declare global {
           promptMode?: "cleanup" | "agent";
           purpose?: CloudReasonPurpose;
           screenContext?: ScreenContextImage;
+          tone?: DictationTone;
+          appCategory?: ToneAppCategory;
           language?: string;
           locale?: string;
           streamingFallbackReason?: string;
-        } & SttDetectedLanguageFields
+        } & SttDetectedLanguageFields &
+          OrukeetTelemetry
       ) => Promise<{
         success: boolean;
         text?: string;
@@ -2629,7 +2762,8 @@ declare global {
           analyticsOccurredAt?: string;
           analyticsWordCount?: number;
           analyticsCounterVersion?: number;
-        } & SttDetectedLanguageFields
+        } & SttDetectedLanguageFields &
+          OrukeetTelemetry
       ) => Promise<{
         success: boolean;
         wordsUsed?: number;
@@ -3045,7 +3179,6 @@ declare global {
           systemPrompt?: string;
           tools?: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
           screenContext?: { data: string; mediaType: string };
-          noteChat?: boolean;
         }
       ) => void;
       cancelAgentStream?: (requestId: string) => void;
@@ -3066,6 +3199,13 @@ declare global {
         callback: (payload: PolicyFailureMetadata & { requestId: string; error: string }) => void
       ) => () => void;
       onAgentStreamEnd?: (callback: (payload: { requestId: string }) => void) => () => void;
+
+      productHelp: (
+        id: string,
+        input: { topic: string; page?: string }
+      ) => Promise<import("../services/help/productHelp").HelpResult>;
+      cancelProductHelp: (id: string) => void;
+      productHelpBasics: () => Promise<import("../services/help/productHelp").HelpBasics>;
 
       // Agent cloud tools
       agentOpenNote?: (noteId: number) => Promise<{ success: boolean; error?: string }>;
@@ -3159,14 +3299,11 @@ declare global {
       >;
       gcalGetEvent?: (eventId: string) => Promise<{
         success: boolean;
-        event: {
-          id: string;
-          summary: string | null;
-          start_time: string;
-          end_time: string;
-          attendees_count: number;
-          attendees: string | null;
-        } | null;
+        event: CalendarEvent | null;
+      }>;
+      calendarGetLinkableEvents?: () => Promise<{
+        success: boolean;
+        events: LinkableCalendarEvent[];
       }>;
 
       // Contacts
@@ -3194,6 +3331,7 @@ declare global {
         sessionId: string;
         autoEndEligible: boolean;
         aecEnabled?: boolean;
+        speakerIndexBase?: number;
       }) => Promise<
         {
           success: boolean;
@@ -3202,6 +3340,7 @@ declare global {
           systemAudioMode?: SystemAudioMode;
           systemAudioStrategy?: SystemAudioStrategy;
           oneOnOneAttendee?: { displayName: string; email: string | null } | null;
+          speakerIndexBase?: number;
         } & PolicyFailureMetadata
       >;
       meetingTranscriptionSend?: (buffer: ArrayBuffer, source: "mic" | "system") => void;
@@ -3307,6 +3446,7 @@ declare global {
             speakerLockSource?: "user" | "diarization" | "suggestion";
           }>;
           speakerEmbeddings?: Record<string, number[]> | null;
+          removedSegments?: RemovedTranscriptSegment[];
         }) => void
       ) => () => void;
 
@@ -3532,25 +3672,33 @@ declare global {
         cloudNote: Record<string, unknown>,
         localFolderId: number | null,
         localSpaceId?: number | null
-      ) => Promise<NoteItem>;
+      ) => Promise<NoteItem | null>;
       acknowledgeNoteCreate?: (
         id: number,
         snapshot: NoteCreateSnapshot,
         cloudId: string,
         cloudUpdatedAt?: string | null,
         ownerUserId?: string | null,
-        settleIfUnchanged?: boolean
+        options?: NoteCreateAckWriteOptions
       ) => Promise<NoteCreateAckResult>;
       markNoteSyncedIfUnchanged?: (
         id: number,
         snapshot: NoteUpdateSnapshot,
         expectedCloudId: string,
         cloudUpdatedAt?: string | null,
-        ownerUserId?: string | null
+        ownerUserId?: string | null,
+        cloudRevision?: number | null,
+        cloudNote?: NoteCloudText | null
       ) => Promise<NoteUpdateAckResult>;
-      setNoteCloudBase?: (id: number, cloudUpdatedAt: string | null) => Promise<void>;
+      setNoteCloudBase?: (
+        id: number,
+        cloudUpdatedAt: string | null,
+        cloudRevision?: number | null,
+        options?: NoteCloudBaseOptions
+      ) => Promise<{ success: boolean; note?: NoteItem }>;
       setNoteOwnerFromCloud?: (id: number, ownerUserId: string) => Promise<void>;
       countTeamNotesMissingOwner?: () => Promise<number>;
+      countNotesMissingRevision?: (spaceKind?: "private" | "team") => Promise<number>;
       markNoteSyncError?: (id: number) => Promise<void>;
       restoreNoteAfterDeniedDelete?: (id: number) => Promise<{ success: boolean; id: number }>;
       hardDeleteNote?: (id: number) => Promise<void>;
@@ -3634,7 +3782,11 @@ declare global {
       ) => Promise<DictionaryEntryItem | null>;
       markDictionarySynced?: (
         id: number,
-        cloudId: string
+        cloudId: string,
+        serverUpdatedAt?: string,
+        expectedWord?: string,
+        expectedSource?: DictionaryEntryItem["source"],
+        serverSource?: DictionaryEntryItem["source"]
       ) => Promise<{ success: boolean; changes: number }>;
       hardDeleteDictionary?: (id: number) => Promise<{ success: boolean; id: number }>;
       clearDictionaryCloudId?: (id: number) => Promise<{ success: boolean }>;

@@ -1,8 +1,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const WhisperManager = require("../../src/helpers/whisper.js");
 const { resolveFailedGpuBackends } = require("../../src/helpers/whisper.js");
+const debugLogger = require("../../src/helpers/debugLogger.js");
 
 // Every whisper-server start resolves its GPU backend from the current env +
 // installed packs + remembered failures. This is what makes "Enable GPU" work
@@ -31,53 +35,124 @@ test.afterEach(() => {
   }
 });
 
-function managerWith({ cudaDownloaded = false, vulkanDownloaded = false, npu = null } = {}) {
+function managerWith({
+  cudaDownloaded = false,
+  vulkanDownloaded = false,
+  cudaNeedsUpdate = false,
+  vulkanNeedsUpdate = false,
+  npu = null,
+} = {}) {
   const manager = new WhisperManager();
   manager.setGpuBinaryManagers({
-    cuda: { isDownloaded: () => cudaDownloaded },
-    vulkan: { isDownloaded: () => vulkanDownloaded },
+    cuda: { isDownloaded: () => cudaDownloaded, needsUpdate: () => cudaNeedsUpdate },
+    vulkan: { isDownloaded: () => vulkanDownloaded, needsUpdate: () => vulkanNeedsUpdate },
     npu,
   });
   return manager;
 }
 
-// The GPU pack flags alone; the NPU fields are covered by the NPU tests below
-function gpuFlags(manager) {
-  const { useCuda, useVulkan } = manager.resolveGpuStartOptions();
-  return { useCuda, useVulkan };
-}
-
-// A Windows on Arm NPU runtime with NPU builds of the given models installed
-function npuWith(downloadedModels, { supported = true } = {}) {
-  return {
-    isSupported: () => supported,
-    isModelDownloaded: (model) => downloadedModels.includes(model),
-    getModelDir: (model) => `/npu-models/${model}`,
-    getServerBinaryPath: () => "/bin/whisper-npu-server.exe",
-  };
-}
-
 test("no packs enabled resolves to CPU", () => {
-  assert.deepEqual(gpuFlags(managerWith()), { useCuda: false, useVulkan: false });
+  assert.deepEqual(managerWith().resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 });
 
 test("an enabled + downloaded pack engages without an app restart", () => {
   process.env.WHISPER_CUDA_ENABLED = "true";
   const manager = managerWith({ cudaDownloaded: true });
-  assert.deepEqual(gpuFlags(manager), { useCuda: true, useVulkan: false });
+  assert.deepEqual(manager.resolveGpuStartOptions(), {
+    useCuda: true,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 });
 
 test("enabled but not downloaded resolves to CPU (env flag alone is not an install)", () => {
   process.env.WHISPER_CUDA_ENABLED = "true";
   process.env.WHISPER_VULKAN_ENABLED = "true";
-  assert.deepEqual(gpuFlags(managerWith()), { useCuda: false, useVulkan: false });
+  assert.deepEqual(managerWith().resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 });
 
 test("CUDA wins when both backends are enabled and downloaded", () => {
   process.env.WHISPER_CUDA_ENABLED = "true";
   process.env.WHISPER_VULKAN_ENABLED = "true";
   const manager = managerWith({ cudaDownloaded: true, vulkanDownloaded: true });
-  assert.deepEqual(gpuFlags(manager), { useCuda: true, useVulkan: false });
+  assert.deepEqual(manager.resolveGpuStartOptions(), {
+    useCuda: true,
+    useVulkan: false,
+    fallbackToVulkan: true,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
+});
+
+test("a restart after the Vulkan pack is removed drops the old Vulkan fallback", async () => {
+  process.env.WHISPER_CUDA_ENABLED = "true";
+  const manager = managerWith({ cudaDownloaded: true, vulkanDownloaded: false });
+  // The last start had both packs; restarts merge their options over it
+  manager.serverManager.lastStartOptions = {
+    useCuda: true,
+    useVulkan: false,
+    fallbackToVulkan: true,
+    npuModelDir: null,
+    npuServerPath: null,
+  };
+  let startOptions = null;
+  manager.stopServer = async () => {};
+  manager.startServer = async (_model, options) => {
+    startOptions = options;
+    return { success: true };
+  };
+
+  await manager.restartServerWithGpuPreference("base");
+
+  assert.equal(startOptions.fallbackToVulkan, false);
+});
+
+test("startup pre-warm preserves the installed Vulkan fallback", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "whisper-prewarm-"));
+  const modelPath = path.join(dir, "ggml-base.bin");
+  fs.writeFileSync(modelPath, "model");
+
+  try {
+    const manager = managerWith({ cudaDownloaded: true, vulkanDownloaded: true });
+    manager.getModelsDir = () => dir;
+    manager.getModelPath = () => modelPath;
+    manager.logDependencyStatus = async () => {};
+    manager.serverManager.isAvailable = () => true;
+
+    let startOptions = null;
+    manager.serverManager.start = async (_modelPath, options) => {
+      startOptions = options;
+    };
+
+    await manager.initializeAtStartup({
+      localTranscriptionProvider: "whisper",
+      whisperModel: "base",
+    });
+
+    assert.deepEqual(startOptions, {
+      useCuda: true,
+      useVulkan: false,
+      fallbackToVulkan: true,
+      npuModelDir: null,
+      npuServerPath: null,
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a remembered CUDA failure degrades to Vulkan, then both failures to CPU", () => {
@@ -86,10 +161,22 @@ test("a remembered CUDA failure degrades to Vulkan, then both failures to CPU", 
   const manager = managerWith({ cudaDownloaded: true, vulkanDownloaded: true });
 
   process.env.WHISPER_GPU_FAILED = "cuda";
-  assert.deepEqual(gpuFlags(manager), { useCuda: false, useVulkan: true });
+  assert.deepEqual(manager.resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: true,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 
   process.env.WHISPER_GPU_FAILED = "cuda,vulkan";
-  assert.deepEqual(gpuFlags(manager), { useCuda: false, useVulkan: false });
+  assert.deepEqual(manager.resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 });
 
 test("clearing the failure re-enables the backend (Retry)", () => {
@@ -104,44 +191,92 @@ test("clearing the failure re-enables the backend (Retry)", () => {
 
 test("a downloaded pack with a lost env flag still engages (#1340)", () => {
   const vulkanOnly = managerWith({ vulkanDownloaded: true });
-  assert.deepEqual(gpuFlags(vulkanOnly), { useCuda: false, useVulkan: true });
+  assert.deepEqual(vulkanOnly.resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: true,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 
   const cudaOnly = managerWith({ cudaDownloaded: true });
-  assert.deepEqual(gpuFlags(cudaOnly), { useCuda: true, useVulkan: false });
+  assert.deepEqual(cudaOnly.resolveGpuStartOptions(), {
+    useCuda: true,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 });
 
 test("explicit 'false' opts a downloaded pack out", () => {
   process.env.WHISPER_VULKAN_ENABLED = "false";
   const vulkanOnly = managerWith({ vulkanDownloaded: true });
-  assert.deepEqual(gpuFlags(vulkanOnly), { useCuda: false, useVulkan: false });
+  assert.deepEqual(vulkanOnly.resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 
   process.env.WHISPER_CUDA_ENABLED = "false";
   const cudaOnly = managerWith({ cudaDownloaded: true });
-  assert.deepEqual(gpuFlags(cudaOnly), { useCuda: false, useVulkan: false });
+  assert.deepEqual(cudaOnly.resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 });
 
 test("the 'false' opt-out is case-insensitive (hand-edited .env)", () => {
   // The flag is a hand-edit surface now, so FALSE/False must opt out too.
   process.env.WHISPER_VULKAN_ENABLED = "FALSE";
   const vulkanOnly = managerWith({ vulkanDownloaded: true });
-  assert.deepEqual(gpuFlags(vulkanOnly), { useCuda: false, useVulkan: false });
+  assert.deepEqual(vulkanOnly.resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 
   process.env.WHISPER_CUDA_ENABLED = "False";
   const cudaOnly = managerWith({ cudaDownloaded: true });
-  assert.deepEqual(gpuFlags(cudaOnly), { useCuda: false, useVulkan: false });
+  assert.deepEqual(cudaOnly.resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 });
 
 test("a remembered failure still gates a flag-less downloaded pack", () => {
   process.env.WHISPER_GPU_FAILED = "vulkan";
   const manager = managerWith({ vulkanDownloaded: true });
-  assert.deepEqual(gpuFlags(manager), { useCuda: false, useVulkan: false });
+  assert.deepEqual(manager.resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 });
 
 test("without injected binary managers (macOS) everything resolves to CPU", () => {
   process.env.WHISPER_CUDA_ENABLED = "true";
   process.env.WHISPER_VULKAN_ENABLED = "true";
   const manager = new WhisperManager();
-  assert.deepEqual(gpuFlags(manager), { useCuda: false, useVulkan: false });
+  assert.deepEqual(manager.resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
 });
 
 test("resolveFailedGpuBackends tolerates empty and messy values", () => {
@@ -187,12 +322,192 @@ test("without injected binary managers (macOS) no pack is in use", () => {
   assert.equal(new WhisperManager().resolveGpuPackInUse(), null);
 });
 
+test("_warnIfGpuFallback logs warning when CUDA is enabled in env but pack is missing", () => {
+  const manager = managerWith({ cudaDownloaded: false });
+  process.env.WHISPER_CUDA_ENABLED = "true";
+
+  const originalWarn = debugLogger.warn;
+  const warned = [];
+  debugLogger.warn = (...args) => warned.push(args);
+
+  try {
+    manager._warnIfGpuFallback();
+    assert.equal(warned.length, 1);
+    assert.equal(warned[0][0], "Whisper CUDA enabled but cannot be used, falling back to CPU");
+    assert.equal(warned[0][1].reason, "pack not installed or missing required libraries");
+
+    // Deduplication check
+    manager._warnIfGpuFallback();
+    assert.equal(warned.length, 1);
+  } finally {
+    debugLogger.warn = originalWarn;
+  }
+});
+
+test("_warnIfGpuFallback logs warning when CUDA is enabled in env and pack needs update", () => {
+  const manager = new WhisperManager();
+  manager.setGpuBinaryManagers({
+    cuda: { isDownloaded: () => false, needsUpdate: () => true },
+    vulkan: { isDownloaded: () => false, needsUpdate: () => false },
+  });
+  process.env.WHISPER_CUDA_ENABLED = "true";
+
+  const originalWarn = debugLogger.warn;
+  const warned = [];
+  debugLogger.warn = (...args) => warned.push(args);
+
+  try {
+    manager._warnIfGpuFallback();
+    assert.equal(warned.length, 1);
+    assert.equal(warned[0][0], "Whisper CUDA enabled but cannot be used, falling back to CPU");
+    assert.equal(warned[0][1].reason, "pack needs update");
+  } finally {
+    debugLogger.warn = originalWarn;
+  }
+});
+
+test("_warnIfGpuFallback does not log when CUDA is downloaded and used", () => {
+  const manager = managerWith({ cudaDownloaded: true });
+  process.env.WHISPER_CUDA_ENABLED = "true";
+
+  const originalWarn = debugLogger.warn;
+  const warned = [];
+  debugLogger.warn = (...args) => warned.push(args);
+
+  try {
+    manager._warnIfGpuFallback();
+    assert.equal(warned.length, 0);
+  } finally {
+    debugLogger.warn = originalWarn;
+  }
+});
+
+function fallbackWarnings(t, manager) {
+  const warn = t.mock.method(debugLogger, "warn", () => {});
+  manager._warnIfGpuFallback();
+  return warn.mock.calls.map(({ arguments: [message, meta] }) => ({ message, ...meta }));
+}
+
+test("_warnIfGpuFallback warns about an outdated pack whose flag line was lost (#1340)", (t) => {
+  const warnings = fallbackWarnings(t, managerWith({ cudaNeedsUpdate: true }));
+  assert.deepEqual(warnings, [
+    {
+      message: "Whisper CUDA enabled but cannot be used, falling back to CPU",
+      pack: "CUDA whisper",
+      reason: "pack needs update",
+    },
+  ]);
+});
+
+test("_warnIfGpuFallback stays quiet for a pack that was never installed or is turned off", (t) => {
+  assert.deepEqual(fallbackWarnings(t, managerWith()), [], "unset flag, no pack");
+
+  process.env.WHISPER_CUDA_ENABLED = "false";
+  process.env.WHISPER_VULKAN_ENABLED = "false";
+  const turnedOff = managerWith({ cudaNeedsUpdate: true, vulkanNeedsUpdate: true });
+  assert.deepEqual(fallbackWarnings(t, turnedOff), [], "explicit opt-out");
+});
+
+test("_warnIfGpuFallback names Vulkan when an unusable CUDA pack leaves it running", (t) => {
+  process.env.WHISPER_CUDA_ENABLED = "true";
+  const manager = managerWith({ cudaNeedsUpdate: true, vulkanDownloaded: true });
+  assert.deepEqual(manager.resolveGpuStartOptions(), {
+    useCuda: false,
+    useVulkan: true,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
+
+  const [warning] = fallbackWarnings(t, manager);
+  assert.equal(warning.message, "Whisper CUDA enabled but cannot be used, falling back to Vulkan");
+});
+
+test("_warnIfGpuFallback warns about an unusable Vulkan pack when CUDA isn't wanted", (t) => {
+  process.env.WHISPER_VULKAN_ENABLED = "true";
+  const warnings = fallbackWarnings(t, managerWith({ vulkanNeedsUpdate: true }));
+  assert.deepEqual(warnings, [
+    {
+      message: "Whisper Vulkan enabled but cannot be used, falling back to CPU",
+      pack: "Vulkan whisper",
+      reason: "pack needs update",
+    },
+  ]);
+});
+
+test("_warnIfGpuFallback names a recorded failure for a downloaded pack", (t) => {
+  process.env.WHISPER_GPU_FAILED = "cuda";
+  const [warning] = fallbackWarnings(t, managerWith({ cudaDownloaded: true }));
+  assert.equal(warning.reason, "previous failure recorded");
+});
+
+test("pre-warm and every server start check for a GPU fallback before starting", async (t) => {
+  const os = require("node:os");
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "whisper-gpu-warn-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const modelPath = path.join(dir, "ggml-base.bin");
+  fs.writeFileSync(modelPath, "");
+
+  const manager = managerWith();
+  const order = [];
+  t.mock.method(manager, "_warnIfGpuFallback", () => order.push("warn"));
+  manager.getModelsDir = () => dir;
+  manager.getModelPath = () => modelPath;
+  manager.serverManager = {
+    isAvailable: () => true,
+    getServerBinaryPath: () => null,
+    start: async () => {
+      order.push("start");
+      throw new Error("stop here");
+    },
+  };
+
+  await manager.initializeAtStartup({
+    localTranscriptionProvider: "whisper",
+    whisperModel: "base",
+  });
+  assert.deepEqual(order, ["warn", "start"], "pre-warm");
+
+  order.length = 0;
+  await assert.rejects(manager._runServerTranscription(Buffer.alloc(0), "base", "en"), /stop here/);
+  assert.deepEqual(order, ["warn", "start"], "server start");
+});
+
+test("_warnIfGpuFallback ignores an outdated Vulkan pack while CUDA runs", (t) => {
+  const manager = managerWith({ cudaDownloaded: true, vulkanNeedsUpdate: true });
+  assert.deepEqual(manager.resolveGpuStartOptions(), {
+    useCuda: true,
+    useVulkan: false,
+    fallbackToVulkan: false,
+    npuModelDir: null,
+    npuServerPath: null,
+  });
+  assert.deepEqual(fallbackWarnings(t, manager), []);
+});
+
+// A Windows on Arm NPU runtime with NPU builds of the given models installed
+function npuWith(downloadedModels, { supported = true } = {}) {
+  return {
+    isSupported: () => supported,
+    isModelDownloaded: (model) => downloadedModels.includes(model),
+    getModelDir: (model) => `/npu-models/${model}`,
+    getServerBinaryPath: () => "/bin/whisper-npu-server.exe",
+  };
+}
+
 test("an installed NPU build of the model runs it on the NPU, ahead of any GPU pack", () => {
   process.env.WHISPER_CUDA_ENABLED = "true";
-  const manager = managerWith({ cudaDownloaded: true, npu: npuWith(["small"]) });
+  const manager = managerWith({
+    cudaDownloaded: true,
+    vulkanDownloaded: true,
+    npu: npuWith(["small"]),
+  });
   assert.deepEqual(manager.resolveGpuStartOptions("small"), {
     useCuda: false,
     useVulkan: false,
+    fallbackToVulkan: false,
     npuModelDir: "/npu-models/small",
     npuServerPath: "/bin/whisper-npu-server.exe",
   });
@@ -203,6 +518,7 @@ test("the NPU is resolved per model: one without an NPU build stays on CPU", () 
   assert.deepEqual(manager.resolveGpuStartOptions("base"), {
     useCuda: false,
     useVulkan: false,
+    fallbackToVulkan: false,
     npuModelDir: null,
     npuServerPath: null,
   });
@@ -237,4 +553,12 @@ test("options replayed from an NPU start lose the NPU once it no longer resolves
   assert.equal(options.npuModelDir, null);
   assert.equal(options.npuServerPath, null);
   assert.equal(options.vadEnabled, true);
+});
+
+test("options replayed from a CUDA start with a Vulkan fallback lose it on the NPU", () => {
+  const manager = managerWith({ npu: npuWith(["small"]) });
+  const replayed = { useCuda: true, fallbackToVulkan: true };
+  const options = { ...replayed, ...manager.resolveGpuStartOptions("small") };
+  assert.equal(options.fallbackToVulkan, false);
+  assert.equal(options.npuModelDir, "/npu-models/small");
 });

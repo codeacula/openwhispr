@@ -252,7 +252,7 @@ async function loadNoteEditor(t, permission) {
     });
   const latest = () => renders.at(-1);
   const unmount = () => React.act(async () => root.unmount());
-  return { render, click, latest, unmount, resizeCallbacks };
+  return { render, click, latest, unmount, resizeCallbacks, vite };
 }
 
 test("deleting the AI summary moves the selection to Your notes", async (t) => {
@@ -749,6 +749,157 @@ test("a read-only shared note offers no action picker, chips, slash menu or summ
     assert.ok(!bar.actionChips);
     assert.equal(bar.slashCommands, undefined);
     assert.ok(!bar.callout);
+  } finally {
+    await unmount();
+  }
+});
+
+// The body editor (RichTextEditor, mocked) in the tree the component returned.
+function bodyEditor(tree) {
+  let editor = null;
+  walk(tree, (node) => {
+    if (!editor && node.type?.name === "RichTextEditor") editor = node;
+  });
+  return editor;
+}
+
+test("each tab has its own body editor, so undo never carries over between tabs", async (t) => {
+  // An undo step from one tab, replayed over the other, would save there.
+  const { render, click, latest, unmount } = await loadNoteEditor(t);
+  await render(ENHANCEMENT, { note: { ...NOTE, transcript: "Plain transcript" } });
+  const keys = [bodyEditor(latest()).key];
+  for (const tab of ["raw", "transcript"]) {
+    await click(tab);
+    assert.equal(bodyEditor(latest()).props.disabled === true, tab === "transcript");
+    keys.push(bodyEditor(latest()).key);
+  }
+  assert.ok(keys.every((key) => key != null));
+  assert.equal(new Set(keys).size, 3, `distinct keys, got ${keys}`);
+  await unmount();
+});
+
+test("the body editor sits under the bottom bar's parent, which the bar publishes its height on", async (t) => {
+  // The editor keeps the caret clear of the bar by inheriting --bottom-overlay-height.
+  const { render, latest, unmount } = await loadNoteEditor(t);
+  await render(ENHANCEMENT);
+  let barParent = null;
+  walk(latest(), (node) => {
+    const children = React.Children.toArray(node.props.children);
+    if (!barParent && children.some((child) => child.props?.onAskSubmit)) barParent = node;
+  });
+  assert.ok(barParent, "the note renders its bottom bar");
+  assert.ok(bodyEditor(barParent), "the body editor is inside the bar's parent");
+  await unmount();
+});
+
+const CONFLICT = {
+  id: "cloud-1",
+  client_note_id: NOTE.client_note_id,
+  title: "Kickoff",
+  content: "",
+  content_state: "clear",
+  enhanced_content: NOTE.enhanced_content,
+  updated_at: "2026-09-02T00:00:00.000Z",
+  revision: 4,
+  updated_by_user_id: null,
+};
+
+async function loadWithConflict(t, overrides) {
+  const loaded = await loadNoteEditor(t);
+  const store = await loaded.vite.ssrLoadModule("/stores/noteStore.ts");
+  t.after(() => store.clearNoteConflict(NOTE.client_note_id));
+  await loaded.render(ENHANCEMENT, overrides);
+  await React.act(async () => store.setNoteConflict(NOTE.client_note_id, CONFLICT));
+  const keepButton = () => {
+    let button = null;
+    walk(loaded.latest(), (node) => {
+      if (!button && node.props.children === "notes.spaces.conflictKeep") button = node;
+    });
+    return button;
+  };
+  return { ...loaded, keepButton };
+}
+
+test("Keep saves the pending edits before it advances the base", async (t) => {
+  // A debounced save landing after Keep would write the draft's old notes back
+  // over the clear Keep accepted from the other device.
+  const calls = [];
+  const { keepButton, unmount } = await loadWithConflict(t, {
+    onFlushPendingSaves: async (noteId) => calls.push(["flush", noteId]),
+  });
+  globalThis.window.electronAPI.setNoteCloudBase = async (...args) => {
+    calls.push(["base", ...args]);
+    return { success: true, note: { ...NOTE, content: "" } };
+  };
+  await React.act(async () => keepButton().props.onClick());
+  assert.deepEqual(calls, [
+    ["flush", NOTE.id],
+    [
+      "base",
+      NOTE.id,
+      CONFLICT.updated_at,
+      CONFLICT.revision,
+      { keepLocal: true, cloudNote: CONFLICT },
+    ],
+  ]);
+  assert.equal(keepButton(), null, "the banner is gone");
+  await unmount();
+});
+
+for (const failing of ["flush", "base"]) {
+  test(`Keep leaves the banner up for a retry when the ${failing} step fails`, async (t) => {
+    const errors = t.mock.method(console, "error", () => {});
+    const calls = [];
+    const { keepButton, unmount } = await loadWithConflict(t, {
+      onFlushPendingSaves: async () => {
+        calls.push("flush");
+        if (failing === "flush") throw new Error("disk full");
+      },
+    });
+    globalThis.window.electronAPI.setNoteCloudBase = async () => {
+      calls.push("base");
+      throw new Error("database locked");
+    };
+    await React.act(async () => keepButton().props.onClick());
+    assert.deepEqual(calls, failing === "flush" ? ["flush"] : ["flush", "base"]);
+    assert.ok(keepButton(), "the banner stays");
+    assert.equal(errors.mock.callCount(), 1);
+    await unmount();
+  });
+}
+
+// The note header's date and attendees dropdown in the tree the component returned.
+function findElementOfType(tree, type) {
+  let found = null;
+  walk(tree, (node) => {
+    if (!found && node.type === type) found = node;
+  });
+  return found;
+}
+
+test("the note header hands its event link to the dropdown, changeable only by editors", async (t) => {
+  const { render, latest, unmount, vite } = await loadNoteEditor(t, "viewer");
+  const { default: NoteParticipants } = await vite.ssrLoadModule(
+    "/components/notes/NoteParticipants.tsx"
+  );
+  try {
+    const linkedEvent = { id: "evt-1", summary: "Standup" };
+    await render(undefined, {
+      note: { ...NOTE, cloud_id: "shared-note", calendar_event_id: "evt-1" },
+      linkedEvent,
+    });
+    const viewer = findElementOfType(latest(), NoteParticipants).props;
+    assert.equal(viewer.canEdit, false, "a viewer of a shared note can't change the link");
+    assert.equal(viewer.ownedByUser, false, "someone else's note");
+    assert.equal(viewer.linkedEventId, "evt-1");
+    assert.equal(viewer.linkedEvent, linkedEvent);
+    assert.equal(viewer.noteCreatedAt, NOTE.created_at);
+
+    await render(undefined, { note: { ...NOTE, calendar_event_id: "" } });
+    const owner = findElementOfType(latest(), NoteParticipants).props;
+    assert.equal(owner.canEdit, true, "the user's own note is editable");
+    assert.equal(owner.ownedByUser, true);
+    assert.equal(owner.linkedEventId, null, "an unlinked note's blank id reaches it as no link");
   } finally {
     await unmount();
   }

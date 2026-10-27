@@ -8,6 +8,7 @@ const {
 } = require("./meetingNotificationDestination");
 const { openExternalUrl } = require("./externalUrlOpener");
 const { getMeetingJoinUrl } = require("./meetingJoinUrl");
+const { tagEventAttendeesJson } = require("./eventAttendees");
 const createMeetingAutoEndController = require("./meetingAutoEndController");
 const { createMeetingAudioActivityMonitor } = require("./meetingAudioActivityMonitor");
 const { broadcastToWindows } = require("./windowBroadcast");
@@ -506,7 +507,7 @@ class MeetingDetectionEngine {
         folderId: folder.id,
         spaceId: folder.space_id,
         eventId,
-        participants: calendarEvent?.attendees,
+        participants: tagEventAttendeesJson(calendarEvent?.attendees, eventId),
       });
       note = result.note;
       owner.committedNoteId = note.id;
@@ -633,7 +634,7 @@ class MeetingDetectionEngine {
 
     const updates = { calendar_event_id: calEvent.id };
     if (calEvent.attendees) {
-      updates.participants = calEvent.attendees;
+      updates.participants = tagEventAttendeesJson(calEvent.attendees, calEvent.id);
     }
     const updateResult = this.databaseManager.updateNote(noteResult.note.id, updates);
 
@@ -688,6 +689,13 @@ class MeetingDetectionEngine {
       return;
     }
 
+    // A card closing on its own can flush mid-dictation or mid-cooldown; the
+    // cooldown that follows the recording flushes the queue instead.
+    if (this._userRecording || this._postRecordingCooldown) {
+      debugLogger.info("Holding queued notifications — user is recording", {}, "meeting");
+      return;
+    }
+
     // A dictation's post-recording cooldown can flush while a meeting recording
     // is still live; hold the queue for the flush that follows the recording.
     if (this._recordingSession) {
@@ -731,12 +739,14 @@ class MeetingDetectionEngine {
     this._userRecording = active;
     this.audioActivityDetector.setUserRecording(active);
 
-    if (active) {
-      if (this._postRecordingCooldown) {
-        clearTimeout(this._postRecordingCooldown);
-        this._postRecordingCooldown = null;
-      }
-    } else {
+    // Dictation reports preparing, processing and idle as not recording, so one
+    // gap between dictations reports it several times; a replaced timer must
+    // not flush during the next one.
+    if (this._postRecordingCooldown) {
+      clearTimeout(this._postRecordingCooldown);
+      this._postRecordingCooldown = null;
+    }
+    if (!active) {
       this._postRecordingCooldown = setTimeout(() => {
         this._postRecordingCooldown = null;
         this._flushNotificationQueue();
